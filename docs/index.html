@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dead Closer - AI that books site visits and test drives</title>
+<meta name="description" content="Dead Closer replies to new leads in seconds, qualifies budget and timeline, follows up for days and books site visits and test drives. You pay per qualified booked visit.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <a class="logo" href="#"><i></i>Dead Closer</a>
+  <div class="links">
+    <a href="#demo">Live demo</a><a href="#how">How it works</a><a href="#bench">Benchmarks</a><a href="#api">API</a>
+    <a class="btn" id="gh-link" href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <div class="eyebrow">AI lead closer for real estate &amp; auto dealers</div>
+  <h1>Every new lead answered in seconds. Visits booked in days.</h1>
+  <p class="lede">Dead Closer texts new leads back inside a minute, finds out budget and timeline, follows up politely for weeks, and books the site visit or test drive. It earns a flat fee <b>only when a qualified visit is booked</b>.</p>
+  <div class="cta"><a class="btn primary" href="#demo">Try it as a lead</a><a class="btn" href="#bench">See the benchmark results</a></div>
+  <div class="stats" id="hero-stats" aria-live="polite">
+    <div class="stat"><b>-</b><span>first reply, p95</span></div>
+    <div class="stat"><b>-</b><span>safety cases passed</span></div>
+    <div class="stat"><b>-</b><span>simulated booking rate</span></div>
+    <div class="stat"><b>$50</b><span>per qualified visit (configurable)</span></div>
+  </div>
+</div></header>
+
+<section id="demo"><div class="wrap">
+  <h2>Be the lead</h2>
+  <p class="sub">Chat as a new lead. On the right you can watch the agent's brain: what it learned, what it remembers, what it has scheduled and when a fee is earned. <span class="mode" id="mode">checking...</span></p>
+  <div class="demo">
+    <div class="panel">
+      <h3><span>Lead conversation (SMS)</span><span class="clock" id="clock"></span></h3>
+      <div class="toolbar">
+        <select id="vertical" aria-label="Business type">
+          <option value="real_estate">Skyline Realty (site visits)</option>
+          <option value="auto">Northside Motors (test drives)</option>
+        </select>
+        <select id="scenario" aria-label="Scenario" hidden></select>
+        <button class="btn primary" id="start">Start new lead</button>
+        <span id="skipwrap" style="display:none; margin-left:auto; gap:6px; flex-wrap:wrap; align-items:center">
+          <span class="clock">Lead goes quiet, skip:</span>
+          <button class="btn" data-adv="3">3h</button><button class="btn" data-adv="24">1 day</button><button class="btn" data-adv="72">3 days</button><button class="btn" data-adv="168">7 days</button>
+        </span>
+      </div>
+      <div class="chat" id="chat" role="log" aria-live="polite"><div class="sys">Press "Start new lead" - the agent replies automatically.</div></div>
+      <div class="chips" id="chips"></div>
+      <form class="composer" id="composer" autocomplete="off">
+        <input type="text" id="text" maxlength="500" placeholder="Type as the lead..." aria-label="Message as the lead" disabled>
+        <button class="btn primary" id="send" disabled>Send</button>
+      </form>
+    </div>
+    <div class="panel">
+      <h3><span>Agent brain</span><span class="pill" id="b-status">no lead</span></h3>
+      <div class="brain" id="brain">
+        <div class="row"><span>First reply</span><b id="b-latency">-</b></div>
+        <div class="row"><span>Budget</span><b id="b-budget">unknown</b></div>
+        <div class="row"><span>Timeline</span><b id="b-timeline">unknown</b></div>
+        <div class="row"><span>Lead score</span><b><span class="bar"><i id="b-score" style="width:0%"></i></span> <span id="b-score-n">0</span></b></div>
+        <div class="row"><span>Qualified</span><b id="b-qual">no</b></div>
+        <div class="row"><span>Follow-ups sent</span><b id="b-fu">0</b></div>
+        <div class="row"><span>Visit &amp; fee</span><b id="b-fee" class="fee">-</b></div>
+        <div class="subhead">Long-term memory</div>
+        <ul class="list" id="b-mem"><li><span class="k">empty</span></li></ul>
+        <div class="subhead">Scheduled actions</div>
+        <ul class="list" id="b-jobs"><li><span class="k">none</span></li></ul>
+        <div class="subhead">Safety &amp; decision log</div>
+        <ul class="list" id="b-log"><li><span class="k">none</span></li></ul>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="sub">A LangGraph state machine. Decisions are deterministic code; the language model only reads the lead's text and words an already-decided plan, so there is nothing for a prompt injection to hijack.</p>
+  <div class="flow">
+    <div class="node"><b>ingest</b>Load lead, tenant, long-term memory. Redact PII. <em>Short-term memory = checkpointed thread.</em></div>
+    <div class="node guard"><b>guard_in</b>Opt-out, abuse, legal threat, distress, injection, flood. <em>Code, not LLM.</em></div>
+    <div class="node"><b>understand</b>Budget, timeline, slot choice, intent. <em>Claude tool call or offline rules.</em></div>
+    <div class="node"><b>remember</b>Facts to long-term memory, score the lead, upgrade billing when qualified.</div>
+    <div class="node agent"><b>decide (supervisor)</b>Routes to qualifier, closer, info, objections or follow-up agent.</div>
+    <div class="node"><b>compose</b>Plan to SMS. <em>Claude rewrite or templates.</em></div>
+    <div class="node guard"><b>guard_out</b>No invented prices, links, fair-housing steering, AI denial, tenant leaks. Fallback to template.</div>
+    <div class="node"><b>deliver</b>Quiet hours, frequency cap, STOP footer, persist, schedule follow-ups and reminders.</div>
+    <div class="node"><b>scheduler</b>Follow-up cadence ~3h, 1d, 3d, 7d, 14d, 28d; angles chosen by UCB from this tenant's reply history.</div>
+    <div class="node"><b>billing</b>Fee pending on a qualified booking, earned when the visit time passes, void on cancel.</div>
+  </div>
+  <div class="grid3" style="margin-top:16px">
+    <div class="card"><h4>Short-term memory</h4><p>Each lead is a LangGraph thread. The checkpointer keeps the rolling conversation window and a running summary of older turns.</p></div>
+    <div class="card"><h4>Long-term memory</h4><p>Per-lead facts, preferences and episodes survive weeks (a returning lead is greeted with what they wanted). Per-tenant playbook learns which follow-up angles get replies.</p></div>
+    <div class="card"><h4>Multi-tenant</h4><p>Every row, tool call and memory is scoped by tenant; API keys are hashed; tenants cannot see each other's leads, inventory or learnings.</p></div>
+  </div>
+</div></section>
+
+<section id="bench"><div class="wrap">
+  <h2>Benchmark results</h2>
+  <p class="sub" id="bench-sub">Loading...</p>
+  <div class="grid3" style="grid-template-columns: 1fr 1fr">
+    <div class="card"><h4>Agent variants (simulated leads)</h4><p style="margin-bottom:10px">Revenue per 100 leads, mean of 3 seeds.</p><div class="chart" id="chart-variants"></div></div>
+    <div class="card"><h4>Safety suite by category</h4><p style="margin-bottom:10px">Cases passed / total.</p><div class="chart" id="chart-safety"></div></div>
+  </div>
+  <div class="card" style="margin-top:12px; overflow-x:auto"><h4>Details</h4><table id="bench-table"></table></div>
+  <div class="note" id="bench-note"></div>
+</div></section>
+
+<section id="api"><div class="wrap">
+  <h2>Integrate in minutes</h2>
+  <p class="sub">Point your lead form or CRM webhook at one endpoint. The reply is returned synchronously; pull the outbox into Twilio, WhatsApp or email.</p>
+<pre>curl -X POST $HOST/v1/leads \
+  -H "Authorization: Bearer $DEADCLOSER_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Priya","phone":"+15125550101","message":"Interested in the Mueller home, budget 450k","item_id":"RE-101"}'
+
+# -> {"lead_id":"l_...","reply":"Hi Priya! Dana here, Skyline Realty's virtual assistant...","latency_ms":12,"within_sla":true}
+
+curl -H "Authorization: Bearer $DEADCLOSER_KEY" $HOST/v1/billing     # fees: pending / earned / void
+curl -H "Authorization: Bearer $DEADCLOSER_KEY" $HOST/v1/outbox      # messages to send via your SMS provider</pre>
+</div></section>
+
+<footer><div class="wrap">Dead Closer. Open source. The demo above uses sandbox data and a virtual clock; no messages are sent to real phones.</div></footer>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

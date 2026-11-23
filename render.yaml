@@ -1,0 +1,20 @@
+# One-click deploy: Render -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: dead-closer
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DEADCLOSER_ADMIN_KEY      # create tenants with: POST /admin/tenants (header X-Admin-Key)
+        generateValue: true
+      - key: DEADCLOSER_DEMO           # public sandbox demo on the website
+        value: "1"
+      - key: DEADCLOSER_DB             # free plan has an ephemeral disk; attach a Render Disk at /data for persistence
+        value: /tmp/deadcloser.db
+      - key: DEADCLOSER_CHECKPOINTS
+        value: /tmp/checkpoints.db
+      - key: DEADCLOSER_LLM            # auto = Claude if ANTHROPIC_API_KEY is set, otherwise the offline rules engine
+        value: auto
+      - key: ANTHROPIC_API_KEY         # optional
+        sync: false
