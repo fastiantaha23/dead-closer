@@ -1,139 +1,155 @@
 # Dead Closer
 
-An AI sales closer for **real-estate agencies** (site visits) and **car dealers** (test drives).
+An AI sales agent for **real-estate agencies** (site visits) and **car dealers** (test drives). It answers every new lead in seconds, qualifies **budget and timeline**, follows up for weeks, books the visit, and earns a flat fee **only when a qualified visit is booked**.
 
-It replies to every new lead **inside a minute**, finds out **budget and timeline**, **follows up for weeks** without being annoying, and **books the visit**. You pay **a flat fee per qualified, booked visit** - nothing for chatter.
+![Demo](bench/results/demo.gif)
 
-> Live site: **https://fastiantaha23.github.io/dead-closer/** · Source: **https://github.com/fastiantaha23/dead-closer** · Benchmarks: [RESULTS.md](RESULTS.md)
-
-The site hosts a chat with the agent plus a panel showing what it learned, remembers, scheduled and earned. On GitHub Pages it replays transcripts recorded from the real engine; run the server (below) or deploy it and the same page talks to the live engine in a sandbox with a virtual clock.
-
-## What you asked for, and where it is
-
-| Requirement | Implementation |
+| | |
 |---|---|
-| Replies to new leads within a minute | `POST /v1/leads` answers synchronously; first-reply p95 is 54 ms on the offline engine, `within_sla` is returned on every call |
-| Qualifies budget and timeline | `nlu.py` / Claude tool call -> `agents/qualifier.py` (score 0-100, max two asks per field, one question per message) |
-| Follows up for days | `agents/followup.py` + job scheduler: ~3 h, 1 d, 3 d, 7 d, 14 d, 28 d, quiet hours respected, stops on reply / STOP / booking |
-| Books site visits / test drives | `agents/closer.py` + `tools.book_visit` (validated slots, capacity, atomic, idempotent), reminders 24 h and 2 h before |
-| Earns per booked visit | `billing.py`: fee **pending** on booking, **earned** when the visit time passes, **void** on cancel; only *qualified* visits are billable |
-| LangGraph | `graph.py`: ingest -> guard_in -> understand -> remember -> decide -> compose -> guard_out -> deliver |
-| Website | `deadcloser/web` (landing, live demo, benchmark charts, API docs) |
-| Tools | inventory search, slot search, booking, cancel, jobs, memory (`tools.py`), all tenant-scoped |
-| Short-term memory | LangGraph checkpointer per lead thread (rolling window + running summary) |
-| Long-term memory | per-lead facts / preferences / episodes survive weeks (`memory.py`); per-tenant follow-up playbook learned with UCB1 |
-| Multiple users | multi-tenant: hashed API keys, every query tenant-scoped, isolation tests over HTTP and in the engine |
-| Safety | deterministic guards on input and output + a 100-case adversarial suite |
-| Benchmark | `bench/`: speed, load, extraction accuracy, conversion ablations, compliance counters, safety |
-| Deploy + GitHub | `Dockerfile`, `render.yaml`, GitHub Pages site in `docs/` |
-| Agents | supervisor + qualifier, closer, info, objections, follow-up agents in `deadcloser/agents/` |
+| Website (GitHub Pages, replay mode) | https://fastiantaha23.github.io/dead-closer/ |
+| Website (Vercel) + Agent API (Hugging Face / Render) | set after deploy, see [Deploy](#deploy-free-tier) |
+| Benchmarks | [RESULTS.md](RESULTS.md) |
+| Own test cases | [tests.json](tests.json) (10 cases, runner in `scripts/run_tests_json.py`) |
+
+## Workshop checklist
+
+| Must-have | Where it is |
+|---|---|
+| Customer page + admin dashboard | `deadcloser/web/chat.html` (customer chat), `admin.html` (users, memory, visits, fees, decision log), `index.html` (landing + demo + benchmarks) |
+| LangGraph agent, >= 2 agents/nodes | `deadcloser/graph.py`: 10 nodes (ingest, guard_in, understand, remember, decide, compose, guard_out, deliver, optout, resub) and a supervisor routing to the **qualifier, closer, info, objections and follow-up agents** (`deadcloser/agents/`) |
+| >= 2 real tools | `search_inventory`, `check_availability`, `book_visit`, `cancel_visit`, `save_memory`, `recall_memory` (`deadcloser/tools.py`); every call is returned in `tool_calls` |
+| Short-term memory by `thread_id` | LangGraph checkpointer, one checkpoint thread per `(user, thread_id)`; rolling window + running summary |
+| Long-term memory by `user_id` | per-user facts, preferences, notes and episodes in Postgres (`memories` + `leads`) |
+| Users never see each other's data | every query scoped by `user_id`/tenant; tested in the engine, over HTTP and on real Postgres |
+| Safety | refuses off-topic and prompt injection, asks YES before cancelling or booking an un-offered time, STOP/START, PII redaction, no invented prices/promises, fair-housing guard |
+| Model | `claude-haiku-5-5` (`DEADCLOSER_MODEL`), at most 2 small calls per message; compliance/slot messages use exact templates with no model call |
+| `POST /chat`, `GET /health` | open, no login; `/chat` returns exactly `{reply, tool_calls, tokens}`, `/health` returns `ok` |
+| Hosted Postgres memory | `DATABASE_URL` (Neon / Supabase); nothing important is in process memory |
+| `.env.example`, `tests.json`, benchmark table, memory note | in this repo, below |
 
 ## Architecture
 
+```mermaid
+flowchart LR
+  U[Customer page<br/>Vercel static site] -->|POST /chat| API
+  A[Admin dashboard<br/>X-Admin-Key] -->|/admin/*| API
+  subgraph API[Agent API - FastAPI on Hugging Face Space / Render]
+    direction TB
+    G[LangGraph state machine] --> T[Tools]
+    G --> S[Safety guards<br/>input + output, plain code]
+  end
+  API -->|messages, long-term memory,<br/>visits, ledger, checkpoints| PG[(Postgres<br/>Neon / Supabase)]
+  API -->|understand + wording only| C[Claude Haiku 5.5]
 ```
-inbound lead / timer ──► ingest ──► guard_in ──┬─► optout ──────────────────────────┐
-                         (redact PII,          ├─► silent (human owns the lead)      │
-                          load memory)         └─► understand ─► remember ─► decide ─┤◄─ follow-up / reminder triggers
-                                                   (Claude tool   (facts → memory,   │   skip straight to decide
-                                                    or rules)      score, billing)   ▼
-                                       deliver ◄── guard_out ◄── compose ◄── supervisor policy
-                              (quiet hours, caps, STOP footer,    (no invented     (qualifier / closer /
-                               persist, schedule next follow-up)   prices, links,    info / objections /
-                                                                   steering)         follow-up agents)
+
+```mermaid
+flowchart LR
+  I[ingest<br/>redact PII, load memory] --> GI{guard_in}
+  GI -->|STOP| O[optout]
+  GI -->|START| R[resub]
+  GI -->|human owns lead / flood| X[silent]
+  GI --> UN[understand<br/>Claude tool call or rules] --> RM[remember<br/>facts to long-term memory,<br/>score, billing] --> D
+  O --> CO
+  R --> CO
+  GI -->|follow-up / reminder jobs| D[decide<br/>supervisor policy]
+  D --> Q[qualifier agent]
+  D --> CL[closer agent<br/>slots / book / cancel]
+  D --> IN[info agent<br/>answers, memory recall]
+  D --> OB[objections agent]
+  D --> FU[follow-up agent]
+  Q & CL & IN & OB & FU --> CO[compose<br/>Claude rewrite or template] --> GO{guard_out<br/>no invented prices,<br/>links, steering, AI denial} --> DE[deliver<br/>quiet hours, caps, persist,<br/>schedule follow-ups]
 ```
 
-**Design rule: the model never decides, it only reads and words.** Which action to take, which tool to call, which tenant's data to touch, whether a message may be sent - all plain code. Claude is used to (1) turn the lead's text into structured fields (tool call) and (2) rewrite an already-decided plan in a warmer voice. Every model output passes the same deterministic output guard, and any failure (timeout, refusal, bad output) falls back to the rules engine, so the lead is always answered.
+**Design rule: the model never decides, it only reads and words.** Which action to take, which tool to call and whose data to touch are plain code. Claude turns the lead's text into structured fields (one tool call) and rewrites an already-decided plan in a friendlier voice. Every output passes the same deterministic guard, and any model failure (timeout, refusal, bad output) falls back to a template, so the user always gets an answer.
 
-### Safety, concretely
+## Memory design note
 
-- **Opt-out**: STOP and ~15 phrasings/languages (while not tripping on "stop by at 3"), one confirmation, then permanent silence - follow-ups, reminders, even re-submitted forms are suppressed.
-- **Prompt injection**: lead text is fenced as data; injection attempts are detected, logged and deflected; there is nothing to hijack because actions are not model-chosen.
-- **PII**: card numbers (Luhn), SSNs, passwords/CVV/PIN are redacted *before* they reach the checkpointer, DB, memory or model.
-- **Honesty**: introduces itself as a virtual assistant, admits being an AI when asked, never quotes a price that is not in inventory data, never promises discounts/approvals/appreciation, escalates unknown details instead of guessing.
-- **Fair housing**: declines neighbourhood/people questions, output guard blocks steering language.
-- **Escalation**: abuse, legal threats, "get me a human" and distress hand the lead to a person and silence automation.
-- **Incentive integrity**: a visit is billable only if the lead is qualified (budget fits inventory, timeline <= 90 days, not "just browsing"). Padding visits earns nothing.
-- **Compliance**: proactive messages only 9:00-20:00 local, caps per day, flood throttling, STOP footer on the first message.
-- **Tenant isolation**: tenant id comes from the API key, never from the model; hashed keys; cross-tenant leakage guard on output.
+| | Short-term | Long-term |
+|---|---|---|
+| **Scope** | one conversation = one `thread_id` | one person = one `user_id`, across all threads |
+| **What goes in it** | the rolling message window (last 14 messages) + a running summary of older turns; pending question (`awaiting`), offered visit slots | name, budget, timeline, bedrooms/body/area/feature preferences, the listing they like, booked/cancelled visits, free-text notes ("I have two dogs"), per-business follow-up playbook |
+| **Where it is stored** | LangGraph `PostgresSaver` checkpoint (`thread_id` = `tenant:user:thread`), plus the `messages` table tagged with `thread_id` | Postgres tables `leads` (typed fields) and `memories` (key/value facts), written by the `save_memory` tool |
+| **Survives restart** | yes (Postgres) | yes (Postgres) |
+| **How users are separated** | the checkpoint thread id embeds the user; messages are queried by `lead_id` + `thread_id` | every query has `tenant_id` and the user's lead row; `user_id` is unique per tenant; the model never supplies an id; PII is redacted before storage |
+| **Read by** | `ask_recap` ("what did I just ask?"), the model prompt (last 6 turns) | `ask_memory` ("what do you know about me?"), qualification, personalised greeting for a returning user |
 
-## Quick start
+A new `thread_id` for the same `user_id` starts a clean conversation (no pending question, no transcript) but the agent greets the user back and still knows their budget, timeline, preferences and notes.
+
+## Setup
 
 ```bash
-python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
+git clone https://github.com/fastiantaha23/dead-closer && cd dead-closer
+python -m venv .venv && source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-pytest -q                                                # 55 tests
-DEADCLOSER_ADMIN_KEY=change-me uvicorn deadcloser.api:app_factory --factory --port 8000
-# open http://localhost:8000
+cp .env.example .env                                         # fill in ANTHROPIC_API_KEY, DATABASE_URL, DEADCLOSER_ADMIN_KEY
+export $(grep -v '^#' .env | xargs)                          # or set the variables in your shell
+uvicorn deadcloser.api:app_factory --factory --port 8000    # http://localhost:8000  (site)  /docs (OpenAPI)
 ```
 
-Create a tenant and send a lead:
+Without `ANTHROPIC_API_KEY` the agent runs on its offline rules engine; without `DATABASE_URL` it uses local SQLite files.
 
 ```bash
-curl -X POST localhost:8000/admin/tenants -H "X-Admin-Key: change-me" -H "Content-Type: application/json" \
-     -d '{"name":"Acme Homes","vertical":"real_estate","fee_cents":7500}'          # -> api_key (shown once)
+curl localhost:8000/health                                   # -> ok
+curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
+  -d '{"user_id":"sam","thread_id":"t1","message":"Hi, I am Sam, budget 480k, moving in 2 months"}'
+# -> {"reply": "...", "tool_calls": [{"name":"save_memory",...}, {"name":"check_availability",...}], "tokens": {"in": 0, "out": 0}}
 
-curl -X POST localhost:8000/v1/leads -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-     -d '{"name":"Priya","phone":"+15125550101","message":"Interested in the Mueller home, budget 450k"}'
+pytest -q                                                    # 74 tests (includes a real embedded Postgres)
+python scripts/run_tests_json.py --local                     # tests.json against an in-process app
+python scripts/run_tests_json.py --url https://<your-agent>  # ... or against a deployment
 ```
 
-Endpoints (OpenAPI at `/docs`): `POST /v1/leads`, `GET /v1/leads[/{id}]`, `POST /v1/leads/{id}/messages` (inbound SMS webhook), `GET /v1/outbox` (messages to deliver through your SMS/WhatsApp provider), `GET /v1/visits`, `POST /v1/visits/{id}/status` (completed / no_show), `GET /v1/billing`, `GET /v1/stats`, `POST /v1/scheduler/tick`.
+## Deploy (free tier)
 
-The server runs the scheduler itself every 30 s. Delivery channels are intentionally an adapter you own: poll `/v1/outbox` and post inbound replies to `/v1/leads/{id}/messages` (a Twilio webhook is ~20 lines).
-
-### Use Claude
-
-```bash
-export ANTHROPIC_API_KEY=...            # DEADCLOSER_LLM=auto picks Claude when a key is present
-export DEADCLOSER_MODEL=claude-opus-5-5 # default; claude-haiku-5-5 is a cheaper, faster choice for SMS
-```
-
-Without a key everything runs on the offline rules engine (the default for tests, benchmarks and the public demo).
+1. **Postgres (Neon or Supabase):** create a free project, copy the connection string (`postgresql://...?sslmode=require`). Tables and LangGraph checkpoint tables are created automatically on first start.
+2. **Agent API on Hugging Face Spaces (Docker):** create a write token, then
+   ```bash
+   pip install huggingface_hub
+   export HF_TOKEN=hf_...  DATABASE_URL=postgresql://...  ANTHROPIC_API_KEY=sk-ant-...  DEADCLOSER_ADMIN_KEY=$(openssl rand -hex 24)
+   python scripts/deploy_hf.py --space YOUR_USER/dead-closer
+   ```
+   Keys are set as Space *secrets* from your environment, never committed. API base URL: `https://YOUR_USER-dead-closer.hf.space`. (Render alternative: New -> Blueprint -> this repo, then add `DATABASE_URL` and `ANTHROPIC_API_KEY` in the dashboard; `render.yaml` is included.)
+3. **Website on Vercel:** build the static site pointing at your API, then deploy the `docs/` folder:
+   ```bash
+   python scripts/build_site.py --repo https://github.com/YOUR_USER/dead-closer --api https://YOUR_USER-dead-closer.hf.space/
+   npx vercel deploy docs --prod --yes        # or: import the repo in Vercel, Framework "Other", Root Directory "docs"
+   ```
+4. Check: `<api>/health` -> `ok`; open `<site>/chat.html`; `<site>/admin.html` with your admin key; `python scripts/run_tests_json.py --url <api>`.
 
 ## Benchmarks
 
-Reproduce everything:
-
-```bash
-python -m bench.safety_suite        # 100 adversarial / compliance cases
-python -m bench.simulate 400        # speed, load, extraction, conversion ablations (3 seeds, ~10 min)
-python -m bench.export_replay       # transcripts for the static site
-python scripts/render_results.py    # -> RESULTS.md
-```
+Everything below runs offline on the rules engine (no model calls) - see [RESULTS.md](RESULTS.md) for methods, assumptions and caveats.
 
 | What | Result | Kind |
 |---|---|---|
-| First reply latency (whole engine, offline mode) | p50 **24 ms**, p95 **54 ms**, 100% inside the 60 s SLA | measured |
-| Burst of 300 simultaneous leads (SQLite, one instance) | all answered in <= 2.5 s, ~11 leads/s | measured |
-| Budget extracted correctly (n=641) / timeline (n=642) | **96.9%** / **94.0%** | measured vs ground truth |
-| Safety suite | **100/100** (first run was 92/100; bugs found and fixed, see RESULTS.md) | measured, author-written |
-| Messages after opt-out / proactive outside 9-20h | **0 / 0** over 1,200 simulated leads | measured |
-| Booking rate: full agent vs no follow-ups vs human-speed (4 h) reply | **30.3%** vs 20.2% vs 12.7% | simulated, assumed lead behaviour |
-| No qualification questions | 33.7% bookings but only 28% billable: revenue **$430 vs $1,023** per 100 leads | simulated |
+| First-reply latency, whole engine | p50 **15 ms**, p95 **45 ms**, 100% inside the 60 s SLA | measured |
+| Burst of 300 simultaneous leads (SQLite, one instance) | all answered in <= 1.6 s | measured |
+| Budget / timeline read correctly (n = 639 / 643) | **96.9% / 93.8%** | measured vs ground truth |
+| Safety suite (opt-out, injection, PII, fair housing, honesty, escalation, billing, isolation, off-topic, confirmation, robustness) | **118/118** (first run 92/100; bugs fixed) | measured, author-written |
+| `tests.json` (own 10 cases) | **10/10** locally | measured |
+| Booking rate: full agent vs no follow-ups vs human-speed (4 h) reply | **30.6%** vs 19.5% vs 12.8% | simulated, assumed lead behaviour |
+| Without qualification questions | 33.5% bookings but only 28% billable: **$423 vs $1,025** revenue per 100 leads | simulated |
 
-Full tables, assumptions and caveats: **[RESULTS.md](RESULTS.md)**.
+## Safety, concretely
 
-## Deploy
+Off-topic requests are refused (and the conversation state is preserved); prompt injection is detected, logged and deflected - and since actions are not model-chosen there is nothing to hijack; **cancelling a visit or booking a time that was never offered requires an explicit YES**; PII (cards, SSNs, passwords) is redacted before it reaches the DB, checkpoint or model; prices are only quoted from inventory data; no promises about discounts, approvals or appreciation; neighbourhood/people questions are declined (fair housing); abuse, legal threats and distress hand over to a human; STOP unsubscribes (START resumes); proactive follow-ups only 9:00-20:00 local; a visit is billable only for a qualified lead, so the agent has no incentive to pad bookings.
 
-- **Static site (GitHub Pages)**: `python scripts/build_site.py --repo <url>` writes `docs/`; Pages serves `main:/docs`. Without a backend it replays real transcripts.
-- **Full engine (Render, free tier works)**: Render -> New -> Blueprint -> select this repo (`render.yaml`). Add `ANTHROPIC_API_KEY` to use Claude. Then rebuild the site with `--api https://<your-service>.onrender.com/` and the Pages demo becomes live.
-- **Docker**: `docker build -t dead-closer . && docker run -p 8000:8000 -v dc:/data dead-closer`.
+## Honest limits
 
-## Limits you should know about
-
-- **Simulated conversion numbers are assumptions, not evidence.** They show how variants compare; real booking rates need a pilot with real leads.
-- **Claude mode is wired, unit-tested with a fake client, and falls back safely, but it has not been run against the live API or the benchmark in this repo's history.** Run the safety suite with `DEADCLOSER_LLM=claude` before trusting it.
-- SQLite + a single worker: about 11 new-lead conversations/s in the burst test on a laptop; for more, shard by tenant or swap the storage layer for Postgres.
-- Channel delivery (SMS/WhatsApp/email), CRM sync, calendar sync and real consent records are integration points, not included. You are responsible for TCPA/GDPR consent for the numbers you load.
-- Timezones are a fixed UTC offset per tenant (no DST rules). Inventory is managed through the DB/seed, not an admin UI.
-- The Docker image and Render blueprint were written but not built in the authoring environment (no Docker daemon / hosting account available).
+- The simulated conversion numbers rest on assumed lead behaviour - they compare variants, they do not predict real booking rates.
+- **The Claude path (Haiku 5.5) is implemented and unit-tested with a fake client, but has not been run against the live API or the benchmarks.** Run `DEADCLOSER_LLM=claude python -m bench.safety_suite` and `scripts/run_tests_json.py` with your key before relying on it. Cost control: at most two calls per message, `effort: low`, trivial messages skip the model.
+- Off-topic and "what do you remember" detection are rule-based (explicit phrases + a domain-vocabulary check); unusual phrasings can slip through either way.
+- One server process (per-user locks are in-process); SQLite/Postgres are fine for hundreds of leads/minute.
+- Channels (SMS/WhatsApp), calendar and CRM sync are integration points, not included. Timezones are a fixed UTC offset per business.
 
 ## Layout
 
 ```
-deadcloser/   api.py engine.py graph.py  agents/  tools.py memory.py billing.py safety.py nlu.py nlg.py llm.py  web/
+deadcloser/   api.py engine.py graph.py agents/ tools.py memory.py billing.py safety.py nlu.py nlg.py llm.py db.py web/
 bench/        simulate.py safety_suite.py export_replay.py results/
-tests/        flow, safety, API, Claude-backend tests
-scripts/      build_site.py render_results.py
+tests/        flow, safety, API, chat/memory, Claude-backend tests (incl. real Postgres)
+scripts/      deploy_hf.py build_site.py run_tests_json.py render_results.py
+tests.json  .env.example  Dockerfile  render.yaml
 ```
 
 MIT licensed.

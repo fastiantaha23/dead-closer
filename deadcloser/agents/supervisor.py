@@ -80,10 +80,19 @@ def inbound(t: Turn) -> None:
         return
     t.segments[:0] = pre
 
+    if t.awaiting_before == "confirm_cancel" and not f.get("injection") and closer.handle_cancel_reply(t):
+        return
     if f.get("injection"):
         t.add("injection_deflect")
         t.actions.append("injection_deflected")
         next_step(t)
+        return
+    if "off_topic" in i and not (i - {"off_topic", "question", "greet"}):
+        t.add("off_topic")
+        t.actions.append("off_topic_refused")
+        t.events.append({"event": "off_topic_refused", "text": t.text[:120]})
+        # keep the conversation state exactly where it was (e.g. still waiting for a slot choice)
+        t.awaiting, t.offered = t.awaiting_before, list(t.lead.get("offered") or [])
         return
 
     if "cancel_visit" in i and "reschedule" not in i:
@@ -165,6 +174,8 @@ def returning(t: Turn) -> None:
         inbound(t)
         if len(t.segments) == 1:
             next_step(t)
+        if any(s["t"] in ("recall_memory", "recap_chat", "about_me", "off_topic", "handoff", "deescalate", "optout", "distress") for s in t.segments):
+            t.segments = [s for s in t.segments if s["t"] != "returning"]      # a direct answer beats a welcome-back preamble
     else:
         next_step(t)
 

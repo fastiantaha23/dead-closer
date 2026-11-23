@@ -19,6 +19,8 @@ ANGLES = ["new_match", "value_add", "easy_choice", "availability", "question_pro
 
 def remember(db: Database, tenant_id: str, lead_id: str, key: str, value: Any, kind: str, now: int,
              confidence: float = 1.0) -> None:
+    from .tools import record
+    record("save_memory", {"key": key, "value": str(value)[:80]}, {"ok": True})
     db.execute(
         "INSERT INTO memories(tenant_id,lead_id,key,value,kind,confidence,ts) VALUES (?,?,?,?,?,?,?) "
         "ON CONFLICT(tenant_id,lead_id,key) DO UPDATE SET value=excluded.value, kind=excluded.kind, "

@@ -37,7 +37,7 @@ _INJECTION = [
     r"repeat (?:everything|all|the (?:text|words|message)|your (?:instructions|prompt)) (?:above|before|prior)", r"print your (?:hidden )?(?:instructions|prompt)",
     r"\bsystem prompt\b", r"\bdeveloper mode\b", r"\bjailbreak\b", r"\bDAN\b", r"you are now (?:a|an|in)\b",
     r"act as (?:a |an )?(?:different|unrestricted|admin|system|developer)", r"pretend (?:you|to) (?:are|be) ",
-    r"\bnew instructions?:", r"</?(?:system|assistant|instructions?)>", r"\[\s*(?:system|admin|developer)\s*\]",
+    r"^\s*(?:system|assistant|developer|admin)\s*:", r"\bnew instructions?\b", r"give (?:the user|me|us|him|her|them) (?:a )?\d+ ?% (?:discount|off)", r"</?(?:system|assistant|instructions?)>", r"\[\s*(?:system|admin|developer)\s*\]",
     r"override (?:your |the )?(?:rules|policy|policies|safety|pricing|fee)", r"(?:api|secret|admin) ?key",
     r"other (?:customers|clients|tenants|companies|dealers|agencies)'? (?:data|leads|numbers|info|conversations)",
     r"\bsudo\b", r"\bexec(?:ute)?\(", r"\bdrop table\b", r"<script", r"\bprompt injection\b",
@@ -124,7 +124,7 @@ _URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _PHONE = re.compile(r"(?<!\d)(?:\+?1[ -]?)?\(?\d{3}\)?[ -]?\d{3}[ -]?\d{4}(?!\d)")
 _MONEY = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(k|m|million|thousand)?", re.I)
 _PROFANITY = re.compile(r"\b(?:fuck\w*|shit\w*|bitch\w*|asshole|damn|crap)\b", re.I)
-MAX_LEN = 480
+MAX_LEN = 640
 
 
 def parse_money_amounts(text: str) -> set[int]:

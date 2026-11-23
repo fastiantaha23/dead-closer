@@ -10,6 +10,13 @@ def say(dc, tid, lid, text, now):
     return dc.inbound(tid, lid, text, now)
 
 
+def book(dc, tid, lid, text, now):
+    """Ask for a specific time; the agent asks for confirmation before writing the booking, so answer YES."""
+    r = dc.inbound(tid, lid, text, now)
+    assert "confirm_slot_requested" in r["actions"], r
+    return dc.inbound(tid, lid, "yes", now + timedelta(seconds=30))
+
+
 def test_first_reply_is_fast_discloses_ai_and_opt_out(dc, realty):
     r = dc.new_lead(realty, name="Priya", phone="+15125550101", message="Hi, interested in the Mueller home", now=T0)
     assert r["sent"] and r["within_sla"] and r["latency_ms"] < 5000
@@ -31,7 +38,7 @@ def test_qualify_then_book_is_billable(dc, realty):
 
 def test_specific_time_request_books_directly(dc, realty):
     lid = dc.new_lead(realty, name="Sam", phone="+15125550102", message="", now=T0)["lead_id"]
-    r = say(dc, realty, lid, "can I see it saturday at 11am?", T0 + timedelta(minutes=1))
+    r = book(dc, realty, lid, "can I see it saturday at 11am?", T0 + timedelta(minutes=1))
     assert "booked" in r["actions"]
     v = dc.lead_view(realty, lid)["visits"][0]
     l = local(from_epoch(v["start_ts"]), -360)
@@ -40,7 +47,7 @@ def test_specific_time_request_books_directly(dc, realty):
 
 def test_unqualified_visit_not_billable_until_lead_qualifies(dc, realty):
     lid = dc.new_lead(realty, name="Sam", phone="+15125550102", message="", now=T0)["lead_id"]
-    say(dc, realty, lid, "can I see it saturday at 11am?", T0 + timedelta(minutes=1))
+    book(dc, realty, lid, "can I see it saturday at 11am?", T0 + timedelta(minutes=1))
     assert dc.stats(realty)["billing"]["pending_cents"] == 0          # incentive guard: nothing owed yet
     say(dc, realty, lid, "probably within 2 months", T0 + timedelta(minutes=3))
     say(dc, realty, lid, "budget 480k", T0 + timedelta(minutes=4))
@@ -49,13 +56,16 @@ def test_unqualified_visit_not_billable_until_lead_qualifies(dc, realty):
 
 def test_cancel_voids_fee_and_reschedule_moves_visit(dc, realty):
     lid = dc.new_lead(realty, name="Sam", phone="+15125550102", message="3 bed under 480k, moving next month", now=T0)["lead_id"]
-    say(dc, realty, lid, "tomorrow at 2pm", T0 + timedelta(minutes=1))
+    book(dc, realty, lid, "tomorrow at 2pm", T0 + timedelta(minutes=1))
     assert dc.stats(realty)["billing"]["pending_count"] == 1
-    r = say(dc, realty, lid, "can we reschedule to wednesday at 3pm", T0 + timedelta(minutes=2))
+    r = book(dc, realty, lid, "can we reschedule to wednesday at 3pm", T0 + timedelta(minutes=2))
     assert "rescheduled" in r["actions"]
     visits = [v for v in dc.lead_view(realty, lid)["visits"] if v["status"] == "booked"]
     assert len(visits) == 1
     r = say(dc, realty, lid, "actually cancel my visit", T0 + timedelta(minutes=3))
+    assert "confirm_cancel_requested" in r["actions"] and "cancelled" not in r["actions"]      # asks before destroying
+    assert dc.stats(realty)["billing"]["pending_cents"] == 5000
+    r = say(dc, realty, lid, "yes", T0 + timedelta(minutes=4))
     assert "cancelled" in r["actions"] and dc.stats(realty)["billing"]["pending_cents"] == 0
 
 

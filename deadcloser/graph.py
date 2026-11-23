@@ -27,7 +27,7 @@ from .agents import qualifier, supervisor
 from .agents.base import Turn, build_rc
 from .config import from_epoch, to_epoch
 from .db import Database
-from .llm import RuleLLM
+from .llm import USAGE, RuleLLM
 
 log = logging.getLogger("deadcloser.graph")
 WINDOW = 14          # messages kept verbatim in short-term memory
@@ -40,6 +40,8 @@ class State(TypedDict, total=False):
     trigger: str
     text: str
     pii: list
+    thread_id: str
+    chat_mode: bool
     now_ts: int
     payload: dict
     run_id: str
@@ -57,15 +59,17 @@ class Brain:
         self.turns: dict[str, Turn] = {}
         g = StateGraph(State)
         for name, fn in (("ingest", self.ingest), ("guard_in", self.guard_in), ("optout", self.optout),
-                         ("understand", self.understand), ("remember", self.remember), ("decide", self.decide),
+                         ("resub", self.resub), ("understand", self.understand), ("remember", self.remember), ("decide", self.decide),
                          ("compose", self.compose), ("guard_out", self.guard_out), ("deliver", self.deliver),
                          ("silent", self.silent)):
             g.add_node(name, fn)
         g.add_edge(START, "ingest")
         g.add_edge("ingest", "guard_in")
         g.add_conditional_edges("guard_in", lambda s: s["route"],
-                                {"optout": "optout", "silent": "silent", "understand": "understand", "decide": "decide"})
+                                {"optout": "optout", "silent": "silent", "understand": "understand", "decide": "decide",
+                                 "resub": "resub"})
         g.add_edge("optout", "compose")
+        g.add_edge("resub", "compose")
         g.add_edge("understand", "remember")
         g.add_edge("remember", "decide")
         g.add_edge("decide", "compose")
@@ -76,16 +80,28 @@ class Brain:
         self.graph = g.compile(checkpointer=checkpointer)
 
     # ------------------------------------------------------------------ run
-    def run(self, tenant_id: str, lead_id: str, trigger: str, text: str, now, payload: dict | None = None) -> dict:
+    def run(self, tenant_id: str, lead_id: str, trigger: str, text: str, now, payload: dict | None = None,
+            thread_id: str | None = None, chat_mode: bool = False) -> dict:
         run_id = uuid.uuid4().hex
         # Sensitive data is detected and redacted BEFORE it can reach the checkpointer, DB, memory or LLM.
         pii = safety.find_pii(text or "")
-        out = self.graph.invoke(
-            {"tenant_id": tenant_id, "lead_id": lead_id, "trigger": trigger, "text": safety.redact(text or ""),
-             "pii": pii, "now_ts": to_epoch(now), "payload": payload or {}, "run_id": run_id},
-            config={"configurable": {"thread_id": f"{tenant_id}:{lead_id}"}})
-        self.turns.pop(run_id, None)
-        return out.get("outcome") or {"sent": False}
+        calls, usage = [], {"in": 0, "out": 0}
+        tk1, tk2 = tools.CALLS.set(calls), USAGE.set(usage)
+        try:
+            # short-term memory = one LangGraph checkpoint thread per (lead, conversation thread_id)
+            cfg_thread = f"{tenant_id}:{lead_id}" + (f":{thread_id}" if thread_id else "")
+            out = self.graph.invoke(
+                {"tenant_id": tenant_id, "lead_id": lead_id, "trigger": trigger, "text": safety.redact(text or ""),
+                 "pii": pii, "now_ts": to_epoch(now), "payload": payload or {}, "run_id": run_id,
+                 "thread_id": thread_id or "", "chat_mode": chat_mode},
+                config={"configurable": {"thread_id": cfg_thread}})
+        finally:
+            tools.CALLS.reset(tk1)
+            USAGE.reset(tk2)
+            self.turns.pop(run_id, None)
+        outcome = dict(out.get("outcome") or {"sent": False})
+        outcome["tool_calls"], outcome["tokens"] = calls, usage
+        return outcome
 
     # ------------------------------------------------------------------ nodes
     def ingest(self, s: State) -> dict:
@@ -96,16 +112,18 @@ class Brain:
         now = from_epoch(s["now_ts"])
         t = Turn(self.db, tenant, lead, now, s["trigger"], text=s.get("text", ""), payload=s.get("payload", {}))
         t.awaiting_before = lead.get("awaiting")
+        t.thread_id, t.chat_mode = s.get("thread_id") or None, bool(s.get("chat_mode"))
         t.mem = memory.recall(self.db, tenant["id"], lead["id"])
         self.turns[s["run_id"]] = t
         update: dict = {"reply": None, "outcome": {}, "plan": {}}
         if t.text and s["trigger"] in ("inbound", "new_lead", "returning"):
             clean = safety.redact(t.text)
-            tools.add_message(self.db, tenant["id"], lead["id"], "in", clean, s["now_ts"], {"trigger": s["trigger"]})
+            tools.add_message(self.db, tenant["id"], lead["id"], "in", clean, s["now_ts"], {"trigger": s["trigger"]}, t.thread_id)
             update["messages"] = [HumanMessage(content=clean)]
             t.text = clean
             lead_up = {"last_in_at": s["now_ts"]}
-            if lead["status"] in ("new", "lost", "dormant", "nurture") and not lead["opted_out"]:
+            resumable = ("new", "lost", "dormant", "nurture") + (("handoff",) if t.chat_mode else ())
+            if lead["status"] in resumable and not lead["opted_out"]:
                 lead_up["status"] = "engaged"
                 lead["status"] = "engaged"
             # playbook: did this reply answer one of our follow-up angles?
@@ -129,19 +147,22 @@ class Brain:
             self.db.audit(t.tid, t.lead["id"], s["now_ts"], "prompt_injection_flagged", text=t.text[:200])
         if t.flags["opt_out"]:
             return {"route": "optout"}
+        if t.lead["opted_out"] and t.text.strip().lower().strip(".!") in ("start", "unstop", "subscribe"):
+            return {"route": "resub"}
         burst = self.db.one("SELECT COUNT(*) n FROM messages WHERE tenant_id=? AND lead_id=? AND direction='in' AND ts>=?",
                             (t.tid, t.lead["id"], s["now_ts"] - 60))["n"]
         if burst > 10:   # message flood: stop replying (cost + abuse control), a human can review
             self.db.audit(t.tid, t.lead["id"], s["now_ts"], "flood_throttled", inbound_last_60s=burst)
             return {"route": "silent"}
-        if t.lead["opted_out"] or t.lead["status"] == "handoff":
+        if t.lead["opted_out"] or (t.lead["status"] == "handoff" and not t.chat_mode):
             self.db.audit(t.tid, t.lead["id"], s["now_ts"], "inbound_for_human", status=t.lead["status"])
             return {"route": "silent"}
         return {"route": "understand"}
 
     def silent(self, s: State) -> dict:
         t = self.turns[s["run_id"]]
-        return {"outcome": {"sent": False, "reason": "human_owned_or_opted_out", "status": t.lead["status"]}}
+        reason = "opted_out" if t.lead["opted_out"] else "handoff" if t.lead["status"] == "handoff" else "throttled"
+        return {"outcome": {"sent": False, "reason": reason, "status": t.lead["status"]}}
 
     def optout(self, s: State) -> dict:
         t = self.turns[s["run_id"]]
@@ -150,6 +171,15 @@ class Brain:
         t.lead_updates["opted_out"] = 1
         t.actions.append("opted_out")
         tools.cancel_jobs(self.db, t.tid, t.lead["id"], ("followup", "nurture", "reminder_24h", "reminder_2h"))
+        return {}
+
+    def resub(self, s: State) -> dict:
+        t = self.turns[s["run_id"]]
+        t.add("resubscribed")
+        t.status, t.send, t.awaiting = "engaged", True, None
+        t.lead_updates["opted_out"] = 0
+        t.lead["opted_out"] = 0
+        t.actions.append("resubscribed")
         return {}
 
     def understand(self, s: State) -> dict:
@@ -184,7 +214,7 @@ class Brain:
         if not t.send or not t.segments:
             return {"reply": None}
         rc = self._rc(t)
-        history = tools.list_messages(self.db, t.tid, t.lead["id"], 8)
+        history = tools.list_messages(self.db, t.tid, t.lead["id"], 8, thread_id=t.thread_id)
         mem = memory.recall_text(t.mem)
         text = self.llm.compose({"segments": t.segments}, rc, history, f"{mem}; {s.get('summary', '')}")
         return {"reply": text}
@@ -205,6 +235,11 @@ class Brain:
             self.db.audit(t.tid, t.lead["id"], s["now_ts"], "output_guard_violation", violations=viol, llm=self.llm.name)
             text = nlg.render(plan, rc)
             viol2 = safety.check_outbound(text, **kw)
+            segs = list(t.segments)
+            while viol2 == ["too_long"] and len(segs) > 1:      # too long: drop trailing steering segments, keep the answer
+                segs = segs[:-1]
+                text = nlg.render({"segments": segs}, rc)
+                viol2 = safety.check_outbound(text, **kw)
             if viol2:
                 self.db.audit(t.tid, t.lead["id"], s["now_ts"], "output_blocked", violations=viol2)
                 t.send, t.status = False, "handoff"
@@ -247,7 +282,7 @@ class Brain:
             updates.update({"last_out_at": now_ts, "awaiting": t.awaiting, "offered": t.offered})
             tools.add_message(self.db, tid, lead["id"], "out", reply, now_ts,
                               {"segments": [x["t"] for x in t.segments], "angle": t.angle, "actions": t.actions,
-                               "llm": self.llm.name})
+                               "llm": self.llm.name}, t.thread_id)
             out["sent"] = True
         elif t.status or t.lead_updates:
             updates.setdefault("awaiting", t.awaiting)

@@ -3,7 +3,10 @@ qualifying question - at most one question per message and at most two asks per 
 interrogate. Facts are written to long-term memory."""
 from __future__ import annotations
 
-from .. import billing, memory, tools
+import re
+import zlib
+
+from .. import billing, memory, nlu, tools
 from ..config import to_epoch
 from .base import Turn
 from ..nlg import money
@@ -59,6 +62,7 @@ def absorb(t: Turn) -> None:
         up["item_id"] = n["item_id"]
         memory.remember(t.db, t.tid, lead["id"], "interested_in", n["item_id"], "preference", now)
 
+    _capture_notes(t, now)
     up["asked"] = asked
     lead.update(up)
     t.lead_updates.update(up)
@@ -71,6 +75,25 @@ def absorb(t: Turn) -> None:
         t.status = "qualified"
     if qualified:  # a visit booked before we knew the lead was real becomes billable now
         billing.reconsider(t.db, t.tenant, lead["id"], now)
+
+
+def _capture_notes(t: Turn, now: int) -> None:
+    """Keep a few free-text self-descriptions ("I have two kids", "I work nights") as long-term notes."""
+    if not t.text or t.flags.get("injection") or t.flags.get("pii") or t.trigger not in ("inbound", "new_lead", "returning"):
+        return
+    existing = [k for k in (t.mem or {}) if k.startswith("note_")]
+    for sent in re.split(r"[.!?\n;]+", t.text):
+        s = sent.strip()
+        if not 12 <= len(s) <= 140 or "?" in s or len(existing) >= 8:
+            continue
+        if not nlu.SELF_INFO_RE.search(s) or nlu.NAME_RE.search(s) or nlu.parse_budget(s, None)["budget_max"] or nlu.parse_timeline(s, t.now)[0] is not None:
+            continue
+        if nlu.BED_RE.search(s) or nlu.OFFTOPIC_RE.search(s):
+            continue
+        key = "note_" + format(zlib.crc32(s.lower().encode()) & 0xFFFFFF, "06x")
+        if key not in existing:
+            memory.remember(t.db, t.tid, t.lead["id"], key, s, "note", now)
+            existing.append(key)
 
 
 def known(lead: dict) -> tuple[bool, bool]:

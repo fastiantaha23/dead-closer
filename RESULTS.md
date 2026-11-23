@@ -8,11 +8,11 @@ First-reply latency, 300 sequential new leads on an idle machine (sqlite file + 
 
 | p50 | p95 | p99 | worst | within 60 s SLA |
 |---|---|---|---|---|
-| 24 ms | 54 ms | 102 ms | 115 ms | 100.0% |
+| 15 ms | 45 ms | 78 ms | 119 ms | 100.0% |
 
-Inside the 12 simulation runs (6 processes sharing one laptop CPU, so inflated by contention) the first reply was p50 53 ms, p95 145 ms, p99 340 ms, worst 1275 ms, 100.0% within 60 s.
+Inside the 12 simulation runs (6 processes sharing one laptop CPU, so inflated by contention) the first reply was p50 33 ms, p95 97 ms, p99 197 ms, worst 484 ms, 100.0% within 60 s.
 
-Burst load test: **300 simultaneous new leads** (+ a reply each) on sqlite file + sqlite checkpointer with 32 workers: sustained 10.8 new-lead conversations/s (one instance, 32 client threads, 28 s burst - do not extrapolate to hourly volume without a soak test), first reply p50 1536 ms, p95 2074 ms, p99 2255 ms, max 2459 ms, 100.0% within the SLA.
+Burst load test: **300 simultaneous new leads** (+ a reply each) on sqlite file + sqlite checkpointer with 32 workers: sustained 19.3 new-lead conversations/s (one instance, 32 client threads, single short burst - do not extrapolate to hourly volume without a soak test), first reply p50 877 ms, p95 1292 ms, p99 1415 ms, max 1568 ms, 100.0% within the SLA.
 
 All 300 leads of the burst were answered inside the SLA; the queue is serialized by SQLite + the GIL, so the burst p95 is the time to drain the queue. With the Claude backend enabled add model latency per call (understand + compose, so two calls per message; not measured here). Run `DEADCLOSER_LLM=claude python -m bench.simulate --perf` to measure it with your key.
 
@@ -22,9 +22,9 @@ Accuracy is scored only where the simulated lead actually stated the value in it
 
 | Field | Accuracy | n |
 |---|---|---|
-| Budget (within 5%) | 96.9% ±0.4 | 641 |
-| Timeline (within max(7 d, 40%)) | 94.0% ±2.0 | 642 |
-| 'Just browsing' detected | 94.6% ±4.1 | 33 |
+| Budget (within 5%) | 96.9% ±0.4 | 639 |
+| Timeline (within max(7 d, 40%)) | 93.8% ±1.6 | 643 |
+| 'Just browsing' detected | 92.2% ±5.7 | 31 |
 
 ## 3. Conversion and revenue (simulated leads - read the caveat)
 
@@ -32,10 +32,10 @@ Accuracy is scored only where the simulated lead actually stated the value in it
 
 | Variant | Booking rate | Revenue / 100 leads | Billable share of bookings | Bookings after a follow-up | Low-intent leads billed / booked |
 |---|---|---|---|---|---|
-| Full agent | 30.3% ±1.6 | $1023 | 74% | 36% | 3.7 / 8.7 |
-| No follow-ups | 20.2% ±1.0 | $700 | 76% | 0% | 2.3 / 5.3 |
-| No qualification questions | 33.7% ±2.0 | $430 | 28% | 34% | 2.0 / 12.0 |
-| Human-speed first reply (4 h) | 12.7% ±0.8 | $435 | 76% | 34% | 3.0 / 5.0 |
+| Full agent | 30.6% ±2.4 | $1025 | 73% | 36% | 3.3 / 8.3 |
+| No follow-ups | 19.5% ±0.6 | $668 | 76% | 0% | 2.0 / 5.3 |
+| No qualification questions | 33.5% ±2.1 | $423 | 28% | 35% | 1.7 / 12.3 |
+| Human-speed first reply (4 h) | 12.8% ±0.8 | $448 | 77% | 35% | 3.0 / 4.7 |
 
 **What to take from it:** follow-ups and fast replies add bookings; removing qualification adds *unqualified* visits but they are not billable, so revenue falls (the billing guard removes any incentive to pad visits).
 
@@ -48,34 +48,34 @@ Per-persona outcome (seed 1):
 | Persona | Leads | Booked | Billable |
 |---|---|---|---|
 | disinterested | 32 | 0 | 0 |
-| warm_buyer | 114 | 54 | 38 |
-| ghoster | 76 | 3 | 3 |
-| hot_buyer | 55 | 50 | 44 |
-| browser | 56 | 5 | 0 |
-| price_sensitive | 46 | 5 | 5 |
+| warm_buyer | 114 | 52 | 37 |
+| ghoster | 76 | 1 | 1 |
+| hot_buyer | 55 | 52 | 44 |
+| browser | 56 | 4 | 0 |
+| price_sensitive | 46 | 4 | 4 |
 | adversarial | 21 | 0 | 0 |
 
 Follow-up playbook the real-estate tenant accumulated in long-term memory (seed 1). **This demonstrates the mechanism, not a benefit:** in the simulation a lead's chance to reply does not depend on the angle, so there is nothing for the bandit to learn and the spread is noise (`checkin` is higher only because it is the first touch). The UCB selection pays off only if real leads respond differently to different angles.
 
 | Angle | Tries | Replies | Rate |
 |---|---|---|---|
-| checkin | 155 | 21 | 14% |
-| new_match | 74 | 6 | 8% |
-| question_prompt | 93 | 6 | 6% |
-| breakup | 133 | 8 | 6% |
-| low_pressure | 136 | 8 | 6% |
-| easy_choice | 88 | 5 | 6% |
-| value_add | 89 | 5 | 6% |
-| availability | 80 | 4 | 5% |
+| checkin | 157 | 22 | 14% |
+| easy_choice | 105 | 8 | 8% |
+| new_match | 76 | 5 | 7% |
+| question_prompt | 84 | 5 | 6% |
+| breakup | 138 | 7 | 5% |
+| value_add | 81 | 3 | 4% |
+| low_pressure | 140 | 5 | 4% |
+| availability | 86 | 3 | 4% |
 
 ## 4. Compliance counters inside the simulation (worst over seeds)
 
 - Messages sent after a lead opted out: **0**
 - Proactive messages outside 9:00-20:00 local: **0**
-- Max / median messages sent to one lead in 35 days: 17 / 7.0
-- Leads that opted out: 5; handed to a human: 12
+- Max / median messages sent to one lead in 35 days: 60 / 7.0
+- Leads that opted out: 5; handed to a human: 6
 
-## 5. Safety suite: 100/100 (100.0%)
+## 5. Safety suite: 118/118 (100.0%)
 
 | Category | Passed |
 |---|---|
@@ -87,6 +87,9 @@ Follow-up playbook the real-estate tenant accumulated in long-term memory (seed 
 | escalation | 8/8 |
 | billing integrity | 8/8 |
 | tenant isolation | 5/5 |
+| off topic | 11/11 |
+| confirmation | 3/3 |
+| user isolation | 4/4 |
 | quiet hours | 2/2 |
 | output guard | 5/5 |
 | robustness | 11/11 |

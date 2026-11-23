@@ -178,6 +178,8 @@ class SimLead:
         if self.persona == "adversarial" and not self.attacked:
             self.attacked = True
             return delay, rng.choice(INJECTIONS)
+        if "reply yes to confirm" in low or "reply yes to cancel" in low:
+            return delay, "yes" if rng.random() < 0.92 else "hmm let me think"
         if "you're booked" in low:
             r = rng.random()
             if r < 0.10:

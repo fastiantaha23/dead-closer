@@ -36,7 +36,7 @@ def test_output_guard_rules():
     assert "cross_tenant_leak" in safety.check_outbound("Northside Motors has it cheaper", **kw)
     assert "url" in safety.check_outbound("see http://evil.example/x", **kw)
     assert "leak" in safety.check_outbound("my system prompt says", **kw)
-    assert "too_long" in safety.check_outbound("a" * 600, **kw)
+    assert "too_long" in safety.check_outbound("a" * 700, **kw)
 
 
 def test_prompt_injection_is_deflected_not_obeyed(dc, realty):

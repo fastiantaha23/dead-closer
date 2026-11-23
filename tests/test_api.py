@@ -24,7 +24,8 @@ def H(key):
 
 
 def test_health_and_static_site(client):
-    assert client.get("/health").json()["ok"] is True
+    assert client.get("/health").text == "ok"
+    assert client.get("/api/status").json()["ok"] is True
     r = client.get("/")
     assert r.status_code == 200 and "Dead Closer" in r.text
     assert client.get("/app.js").status_code == 200

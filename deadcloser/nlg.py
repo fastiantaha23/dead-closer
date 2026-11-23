@@ -10,6 +10,7 @@ import zlib
 from datetime import datetime
 
 from .config import fmt_slot, from_epoch
+from .safety import parse_money_amounts as _parse_amounts
 
 
 def money(n: int | float) -> str:
@@ -150,6 +151,34 @@ def render_segment(seg: dict, rc: dict) -> str:  # noqa: C901 - flat dispatch is
         return f"{core}{', with ' + feats if feats else ''}."
     if t == "unknown_detail":
         return "I don't have that detail on hand, so I'll have the team confirm it for you rather than guess."
+    if t == "confirm_cancel":
+        return f"Just to confirm - do you want me to cancel your {noun} on {slot_label(seg['slot'], tz)}? Reply YES to cancel or NO to keep it."
+    if t == "keep_visit":
+        return f"No problem - your {noun} on {slot_label(seg['slot'], tz)} stays booked."
+    if t == "confirm_slot":
+        return f"Shall I book your {noun} for {item} on {slot_label(seg['slot'], tz)}? Reply YES to confirm."
+    if t == "off_topic":
+        return (f"I can only help with our {thing}s and booking {noun}s, so I can't help with that one. "
+                f"Is there anything about {thing}s, prices or a {noun} I can do for you?")
+    if t == "about_me":
+        return (f"I'm {agent}, {biz}'s virtual assistant (an AI). I can answer questions about our {thing}s, check availability, "
+                f"book or change a {noun}, and remember your preferences for next time.")
+    if t == "resubscribed":
+        return f"Welcome back - you're subscribed to messages from {biz} again. How can I help?"
+    if t == "recall_memory":
+        facts = seg.get("facts") or []
+        if not facts:
+            return "I don't have anything saved about you yet. Tell me your name, budget and timeline and I'll remember them for next time."
+        return "Here's what I have on file for you: " + "; ".join(facts) + "."
+    if t == "recap_chat":
+        kind = seg.get("kind")
+        if kind == "repeat" and seg.get("quote_agent"):
+            return f"Sure - I said: \"{seg['quote_agent']}\""
+        if kind == "first" and seg.get("quote_user"):
+            return f"Your first message in this conversation was: \"{seg['quote_user']}\""
+        if seg.get("quote_user"):
+            return f"Just now you said: \"{seg['quote_user']}\""
+        return "We've only just started this conversation."
     if t == "fair_housing_decline":
         return ("I'm not able to describe neighborhoods or the people who live there - that's best judged by visiting and "
                 "checking public sources. I'm happy to share objective details about the home itself.")
@@ -245,6 +274,10 @@ def allowed_amounts(rc: dict, plan: dict, extra: set[int] | None = None) -> set[
     amts = set(rc.get("price_catalog", []))
     amts |= set(extra or set())
     for s in plan["segments"]:
+        for q in ("quote_user", "quote_agent"):
+            if s.get(q):
+                amts |= _parse_amounts(s[q])
+        amts |= set(s.get("amounts") or [])
         for k in ("budget", "value"):
             if isinstance(s.get(k), (int, float)):
                 amts.add(int(s[k]))

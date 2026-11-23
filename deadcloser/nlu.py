@@ -61,6 +61,13 @@ Q_FEAT_RE = re.compile(r"\b(?:bed(?:room)?s?|bath(?:room)?s?|sq(?:uare)? ?(?:ft|
 Q_FIN_RE = re.compile(r"\b(?:financ\w*|mortgage|loan|down ?payment|emi|interest rate|apr|lease|trade[- ]?in|credit (?:score|check)|monthly payment|pre-?approv\w*|incentives?|rebates?)\b", re.I)
 DEMOGRAPHICS_RE = re.compile(r"\b(?:safe(?:ty)?|crime|dangerous|rough|sketchy|ghetto|demographic\w*|diverse|diversity|immigrants?|race|racial|religio\w*|church|mosque|synagogue|temple|kids|children|families|singles|seniors|elderly|young people|who lives|what kind of (?:people|neighbou?rs)|good (?:area|neighbou?rhood|schools)|bad (?:area|neighbou?rhood)|white|black|asian|hispanic|latino|muslim|christian|jewish|gay|disabled)\b", re.I)
 PROMISE_RE = re.compile(r"\b(?:guarantee\w*|promise|will (?:the )?(?:price|value|it) (?:go|drop|rise|appreciate|increase|decrease)|appreciate in value|good investment|will i (?:get|be) approved|assure|swear)\b", re.I)
+OFFTOPIC_RE = re.compile(r"\b(?:write (?:me )?(?:a |an |some )?(?:poem|essay|story|song|code|script|email|letter|joke|haiku|limerick|rap)|tell me (?:a )?(?:joke|story|riddle)|translate|solve|calculate|(?:what(?:'s| is) (?:the )?(?:capital|weather|meaning of|square root|population|time in|date today))|who (?:is|was|won|wrote|invented|discovered)|how (?:do|to|can) (?:i |you )?(?:cook|bake|code|program|lose weight|hack|invest|learn|make money|build an? (?:app|website))|recipe|bitcoin|crypto|horoscope|homework|python|javascript|\bsql\b|president|election|movie|song lyrics|sports? score|football|cricket|\bnba\b|diagnos\w+|symptoms|legal advice|tax advice|investment advice|stock (?:tips?|market|prices?)|relationship advice|play a game|roleplay|role-play|riddle|trivia|math problem|physics|chemistry|biology|geography|philosophy|quantum|algebra|calculus|\bscience\b|poetry|novel|celebrity|politics|religion|weather|lyrics|sing me|explain (?:to me )?(?:how|why|what) (?!the|this|your|our)|what is \d+\s*[\+\-\*x/]\s*\d+)\b", re.I)
+DOMAIN_RE = re.compile(r"\b(?:home|homes|house|houses|condo|apartment|flat|property|properties|listing|listings|bed|beds|bedroom|bedrooms|bath|baths|sqft|price|prices|cost|budget|afford|mortgage|loan|rent|visit|visits|tour|viewing|view|schedule|book|booking|appointment|resched\w*|cancel\w*|car|cars|vehicle|suv|sedan|truck|drive|test|dealer|dealership|showroom|financ\w*|trade|payment|lease|move|moving|buy|buying|purchase|neighbou?rhood|area|available|availability|location|address|garage|pool|yard|hybrid|electric|rav4|civic|tesla|toyota|honda|ford|mazda|kia|hyundai|mueller|downtown|austin|cedar|westlake|hyde|pflugerville|timeline|stop|start|yes|no|ok|okay|thanks|thank|hello|hi|hey|hours|open|opening|office|team|agent|broker|salesperson|remember|name|options|bot|assistant|human|person|ai|come|see|show|today|tomorrow|tonight|morning|afternoon|evening|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|noon|time|times|slot|slots|free|parking|price|photos|pictures|floor|plan|rooms?|kitchen|garden|balcony|neighbours?|school|commute|insurance|warranty|mileage|color|colour)\b", re.I)
+PRONOUN_RE = re.compile(r"\b(?:i|me|my|mine|we|us|our|you|your|it|its|this|that|these|those|there|here|they|them|he|she)\b", re.I)
+SELF_INFO_RE = re.compile(r"\b(?:my name is|i(?:'m| am)|i have|i need|i want|i prefer|i like|i love|we(?:'re| are| have| need| want)|call me)\b", re.I)
+ABOUT_BOT_RE = re.compile(r"\b(?:who are you|what are you|what can you do|what do you do|how can you help|how do you work|introduce yourself|tell me about yourself)\b", re.I)
+RECAP_RE = re.compile(r"\b(?:what did i (?:just )?(?:say|ask|type|write)|what was my (?:first|last|previous|earlier) (?:message|question|msg)|what (?:did|have) (?:you|we) (?:just )?(?:say|said|discussed|talk(?:ed)? about)|repeat (?:that|what you said|your (?:last )?(?:message|answer))|say that again|summari[sz]e (?:our|this|the) (?:chat|conversation|discussion)|what (?:have )?we (?:covered|discussed)|(?:earlier|before) in this (?:chat|conversation))\b", re.I)
+MEMORY_RE = re.compile(r"\b(?:what(?:'s| is| do you) (?:do you )?(?:know|remember)|do you remember|remember me|what did i tell you|what do you know about me|what(?:'s| is| was) my (?:name|budget|timeline|email|number|preference\w*|bedrooms?|requirements?)|who am i|what (?:did|have) i (?:told|said to) you|recall (?:my|what)|what have you (?:got|saved|stored|noted)|what(?:'s| is) on file)\b", re.I)
 OPTIONS_RE = re.compile(r"\b(?:other (?:options|ones|listings|cars|vehicles|homes|properties)|more (?:options|like)|similar|alternatives?|anything else|something else|what else|any others|other places)\b", re.I)
 GREET_RE = re.compile(r"^\W*(?:hi|hello|hey|hola|good (?:morning|afternoon|evening)|yo|sup|howdy)\b", re.I)
 NAME_RE = re.compile(r"\b(?i:i'?m|i am|this is|my name is|name'?s)\s+([A-Z][a-z]{1,15})\b")
@@ -409,10 +416,28 @@ def understand(text: str, ctx: dict) -> dict:
         intents.add("ask_promise")
     if OPTIONS_RE.search(t):
         intents.add("ask_options")
+    if RECAP_RE.search(t):
+        intents.add("ask_recap")
+    elif MEMORY_RE.search(t):
+        intents.add("ask_memory")
+    if ABOUT_BOT_RE.search(t):
+        intents.add("ask_about_bot")
+    if OFFTOPIC_RE.search(t):
+        intents.add("off_topic")
+    elif not DOMAIN_RE.search(t) and not SELF_INFO_RE.search(t) and not PRONOUN_RE.search(t) and not (
+            slot["date"] or slot["hour"] is not None or slot["part"] or slot["index"] or slot["weekend"]) and (
+            "?" in t or re.match(r"\s*(?:tell|explain|write|give|show|describe|list|what|who|how|why|when|where|can you|could you|please)\b", low)) \
+            and not (intents - {"greet", "question"}) and len(t) > 8 \
+            and not (budget["budget_max"] or budget["budget_min"] or days is not None):
+        intents.add("off_topic")
+    if "off_topic" in intents:
+        intents.discard("question")
     if GREET_RE.search(t):
         intents.add("greet")
     if "?" in t and not (intents - {"greet", "accept"}):
         intents.add("question")
+    if "off_topic" in intents:
+        intents.discard("question")
 
     # context-sensitive: bare answers to the question we just asked
     if awaiting in ("slot", "confirm_slot") and slot["date"]:

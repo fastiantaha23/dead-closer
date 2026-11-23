@@ -37,6 +37,8 @@ class Turn:
     reschedule_of: str | None = None
     events: list[dict] = field(default_factory=list)
     awaiting_before: str | None = None
+    thread_id: str | None = None
+    chat_mode: bool = False
     clarify_budget: int | None = None
     budget_fit: str | None = None
 

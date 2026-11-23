@@ -21,6 +21,27 @@ def propose(t: Turn, pref: dict | None = None, alt: bool = False) -> None:
     t.actions.append("propose_slots")
 
 
+def _asked(t: Turn) -> dict:
+    return dict(t.lead.get("asked") or {})
+
+
+def _set_asked(t: Turn, a: dict) -> None:
+    t.lead["asked"] = a
+    t.lead_updates["asked"] = a
+
+
+def _confirm_slot(t: Turn, slot_ts: int) -> bool:
+    """A time the lead asked for that we did not offer: confirm before writing a booking."""
+    t.offered, t.awaiting = [slot_ts], "slot"
+    t.add("confirm_slot", slot=slot_ts)
+    t.actions.append("confirm_slot_requested")
+    if t.reschedule_of:
+        a = _asked(t)
+        a["pending_reschedule"] = t.reschedule_of
+        _set_asked(t, a)
+    return True
+
+
 def _book(t: Turn, slot_ts: int) -> None:
     item = t.item()
     res = tools.book_visit(t.db, t.tenant, t.lead, item["id"] if item else None, slot_ts, t.now)
@@ -30,6 +51,9 @@ def _book(t: Turn, slot_ts: int) -> None:
         return
     visit = res["visit"]
     t.booked_visit, t.offered, t.awaiting, t.status = visit, [], None, "booked"
+    a = _asked(t)
+    if a.pop("pending_reschedule", None) is not None:
+        _set_asked(t, a)
     t.add("confirm_booking", slot=slot_ts)
     t.actions.append("booked" if not res.get("duplicate") else "booked_duplicate")
     memory.remember(t.db, t.tid, t.lead["id"], "episode_visit",
@@ -47,6 +71,8 @@ def handle_selection(t: Turn) -> bool:
     offered = list(t.lead.get("offered") or [])
     awaiting = t.awaiting_before
     intents = t.intents
+    if not t.reschedule_of and _asked(t).get("pending_reschedule"):
+        t.reschedule_of = _asked(t)["pending_reschedule"]
     specific = bool(slot.get("date") and (slot.get("hour") is not None or slot.get("part")))
     chosen = None
 
@@ -69,9 +95,10 @@ def handle_selection(t: Turn) -> bool:
                 break
         if chosen is None:
             chosen = tools.exact_slot(t.db, t.tenant, t.now, slot)
-        if chosen is None:
-            propose(t, slot, alt=True)
-            return True
+            if chosen is None:
+                propose(t, slot, alt=True)
+                return True
+            return _confirm_slot(t, chosen)
     elif (slot.get("date") or slot.get("part") or slot.get("hour") is not None or slot.get("weekend")) and (
             awaiting in ("slot", "interest") or "book_request" in intents or "reschedule" in intents):
         propose(t, slot)
@@ -84,12 +111,30 @@ def handle_selection(t: Turn) -> bool:
 
 
 def handle_cancel(t: Turn) -> bool:
+    """Cancelling is destructive: ask first, act only on an explicit YES."""
     visits = t.upcoming_visits()
     if not visits:
         t.add("no_visit_to_cancel")
         t.awaiting = "interest"
         return True
+    t.add("confirm_cancel", slot=visits[0]["start_ts"])
+    t.awaiting = "confirm_cancel"
+    t.actions.append("confirm_cancel_requested")
+    return True
+
+
+def handle_cancel_reply(t: Turn) -> bool:
+    visits = t.upcoming_visits()
+    if not visits:
+        return False
     v = visits[0]
+    i = t.intents
+    if "decline" in i or "not_interested" in i and "accept" not in i:
+        t.add("keep_visit", slot=v["start_ts"])
+        t.actions.append("cancel_declined")
+        return True
+    if "accept" not in i:
+        return False
     if tools.cancel_visit(t.db, t.tenant, v["id"], t.now):
         t.cancelled_visit = v
         t.add("cancel_confirm", slot=v["start_ts"])

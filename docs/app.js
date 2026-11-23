@@ -209,7 +209,7 @@
     if (bench) renderBench(bench); else $("#bench-sub").textContent = "Benchmark results are not available in this build.";
 
     try {
-      const h = await (await withTimeout(API + "health", {}, 3500)).json();
+      const h = await (await withTimeout(API + "api/status", {}, 3500)).json();
       if (h.demo_mode) mode = "live";
     } catch (e) {}
     const m = $("#mode");

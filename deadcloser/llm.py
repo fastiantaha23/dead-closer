@@ -14,11 +14,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+from contextvars import ContextVar
 from typing import Any
 
 from . import nlg, nlu
 
 log = logging.getLogger("deadcloser.llm")
+USAGE: ContextVar[dict | None] = ContextVar("dc_llm_usage", default=None)   # per-request {"in": n, "out": n}
 
 UNDERSTAND_TOOL = {
     "name": "record_understanding",
@@ -29,7 +32,7 @@ UNDERSTAND_TOOL = {
             "intents": {"type": "array", "items": {"type": "string", "enum": [
                 "accept", "decline", "book_request", "reschedule", "cancel_visit", "not_interested", "wrong_number",
                 "has_agent", "objection_price", "objection_timing", "need_partner", "ask_price", "ask_availability",
-                "ask_location", "ask_features", "ask_financing", "ask_options", "ask_demographics", "ask_promise", "greet", "question"]}},
+                "ask_location", "ask_features", "ask_financing", "ask_options", "ask_demographics", "ask_promise", "ask_memory", "ask_recap", "ask_about_bot", "off_topic", "greet", "question"]}},
             "budget_min": {"type": ["integer", "null"], "description": "USD total price; convert monthly payments only if stated as monthly"},
             "budget_max": {"type": ["integer", "null"]},
             "budget_monthly": {"type": "boolean"},
@@ -89,6 +92,14 @@ def _clean_understanding(raw: dict) -> dict:
     }
 
 
+# Messages that must be exact (compliance, times, confirmations) never go through the model: cheaper, faster, safer.
+TEMPLATE_ONLY = {"propose_slots", "propose_slots_alt", "confirm_slot", "confirm_booking", "confirm_cancel", "keep_visit", "cancel_confirm",
+                 "optout", "resubscribed", "reminder_24h", "reminder_2h", "handoff", "deescalate", "distress", "injection_deflect",
+                 "pii_warning", "off_topic", "fair_housing_decline", "no_promises", "ai_disclosure", "recall_memory", "recap_chat",
+                 "clarify_budget", "clarify_slot", "no_slots", "no_visit_to_cancel", "see_you", "unknown_detail", "answer_financing"}
+_TRIVIAL = re.compile(r"^\W*(?:yes|no|ok|okay|yep|yeah|nope|sure|stop|start|y|n|[1-3]|thanks|thank you)\W*$", re.I)
+
+
 class RuleLLM:
     name = "rules"
 
@@ -108,10 +119,17 @@ class ClaudeLLM(RuleLLM):
         self.errors = 0
 
     def _create(self, **kw) -> Any:
-        return self.client.messages.create(model=self.model, output_config={"effort": "low"}, **kw)
+        resp = self.client.messages.create(model=self.model, output_config={"effort": "low"}, **kw)
+        u, acc = getattr(resp, "usage", None), USAGE.get()
+        if u is not None and acc is not None:
+            acc["in"] += int(getattr(u, "input_tokens", 0) or 0)
+            acc["out"] += int(getattr(u, "output_tokens", 0) or 0)
+        return resp
 
     def understand(self, text: str, ctx: dict) -> dict:
         base = nlu.understand(text, ctx)  # deterministic baseline (also supplies fields Claude is not asked for)
+        if _TRIVIAL.match(text) or len(text.strip()) <= 2:
+            return base                                   # nothing for a model to add: save the call
         try:
             resp = self._create(
                 max_tokens=1024,
@@ -142,6 +160,8 @@ class ClaudeLLM(RuleLLM):
 
     def compose(self, plan: dict, rc: dict, history: list[dict], memory: str) -> str:
         draft = nlg.render(plan, rc)
+        if all(seg["t"] in TEMPLATE_ONLY for seg in plan["segments"]):
+            return draft
         slots = [nlg.slot_label(s, rc["tz"]) for seg in plan["segments"] for s in seg.get("slots", [])]
         slots += [nlg.slot_label(seg["slot"], rc["tz"]) for seg in plan["segments"] if "slot" in seg]
         try:
@@ -167,7 +187,7 @@ class ClaudeLLM(RuleLLM):
             return draft
 
 
-def make_llm(backend: str = "auto", model: str = "claude-opus-5-5", timeout: float = 20.0) -> RuleLLM:
+def make_llm(backend: str = "auto", model: str = "claude-haiku-5-5", timeout: float = 20.0) -> RuleLLM:
     has_key = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
     if backend == "claude" or (backend == "auto" and has_key):
         try:

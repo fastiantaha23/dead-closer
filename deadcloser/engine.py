@@ -1,6 +1,7 @@
 """DeadCloser: the application façade used by the API, the benchmark and the tests."""
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import threading
@@ -11,7 +12,7 @@ from datetime import datetime
 
 from . import billing, memory, seed, tools
 from .config import Settings, from_epoch, to_epoch, utcnow
-from .db import Database
+from .db import Database, is_postgres_url
 from .graph import Brain
 from .llm import RuleLLM, make_llm
 
@@ -23,9 +24,9 @@ class DeadCloser:
     def __init__(self, settings: Settings | None = None, db: Database | None = None, llm: RuleLLM | None = None,
                  checkpoints: str | None = None):
         self.settings = settings or Settings()
-        self.db = db or Database(self.settings.db_path)
+        self.db = db or Database(self.settings.database_url or self.settings.db_path)
         self.llm = llm or make_llm(self.settings.llm_backend, self.settings.model, self.settings.llm_timeout_s)
-        cp = checkpoints if checkpoints is not None else self.settings.checkpoint_path
+        cp = checkpoints if checkpoints is not None else (self.settings.database_url or self.settings.checkpoint_path)
         self.brain = Brain(self.db, self.llm, self._checkpointer(cp))
         self._locks: dict[tuple, threading.Lock] = defaultdict(threading.Lock)
         self._locks_guard = threading.Lock()
@@ -35,6 +36,15 @@ class DeadCloser:
         if path == ":memory:":
             from langgraph.checkpoint.memory import InMemorySaver
             return InMemorySaver()
+        if is_postgres_url(path):          # short-term memory persisted in Postgres (survives restarts)
+            from langgraph.checkpoint.postgres import PostgresSaver
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+            pool = ConnectionPool(path, min_size=1, max_size=6, open=True, check=ConnectionPool.check_connection,
+                                  kwargs={"autocommit": True, "prepare_threshold": None, "row_factory": dict_row})
+            saver = PostgresSaver(pool)
+            saver.setup()
+            return saver
         import os
         from langgraph.checkpoint.sqlite import SqliteSaver
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -114,6 +124,47 @@ class DeadCloser:
         with self._lead_lock(tenant_id, lead_id):
             out = self.brain.run(tenant_id, lead_id, "inbound", (text or "")[:2000], now)
         return self._finish(tenant_id, lead_id, out, t0, first=False)
+
+    # ------------------------------------------------------------------ public chat (user_id / thread_id)
+    _ID_RE = re.compile(r"^[A-Za-z0-9_.:@\-]{1,64}$")
+
+    def chat(self, user_id: str, thread_id: str, message: str, tenant_id: str | None = None) -> dict:
+        """Conversational entry point. user_id = long-term memory scope, thread_id = short-term memory scope.
+        Returns exactly {reply, tool_calls, tokens}."""
+        if not self._ID_RE.match(user_id or "") or not self._ID_RE.match(thread_id or ""):
+            raise ValueError("user_id and thread_id must be 1-64 chars of [A-Za-z0-9_.:@-]")
+        tenant_id = tenant_id or os.getenv("CHAT_TENANT", "demo_realty")
+        if not tools.get_tenant(self.db, tenant_id):
+            seed.seed_demo(self.db, to_epoch(utcnow()))
+            if not tools.get_tenant(self.db, tenant_id):
+                raise LookupError("chat tenant not configured")
+        now = utcnow()
+        message = (message or "")[:2000]
+        with self._lead_lock(tenant_id, "user:" + user_id):
+            lead = self.db.one("SELECT * FROM leads WHERE tenant_id=? AND user_id=?", (tenant_id, user_id))
+            if lead is None:
+                lead_id = "l_" + uuid.uuid4().hex[:10]
+                self.db.execute("INSERT INTO leads(id,tenant_id,user_id,thread_id,source,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                                (lead_id, tenant_id, user_id, thread_id, "chat", "new", to_epoch(now)))
+                trigger = "new_lead"
+            else:
+                lead_id = lead["id"]
+                trigger = "inbound"
+                if lead.get("thread_id") != thread_id:     # new conversation, same person: long-term memory carries over
+                    self.db.update("leads", tenant_id, lead_id, thread_id=thread_id, awaiting=None, offered=[])
+                    had_out = self.db.one("SELECT COUNT(*) n FROM messages WHERE tenant_id=? AND lead_id=? AND direction='out'",
+                                          (tenant_id, lead_id))["n"]
+                    trigger = "returning" if had_out else "inbound"
+        with self._lead_lock(tenant_id, lead_id):
+            out = self.brain.run(tenant_id, lead_id, trigger, message, now, thread_id=thread_id, chat_mode=True)
+        reply = out.get("reply")
+        if not reply:
+            reply = {"opted_out": "You're unsubscribed from messages. Reply START to resume.",
+                     "handoff": "I've passed your conversation to our team - a person will follow up with you directly.",
+                     "throttled": "You're sending messages very quickly - please give me a moment and try again shortly.",
+                     "guard_blocked": "Sorry, I couldn't put that safely. A team member will follow up with you."}.get(
+                         out.get("reason"), "Thanks - I've noted that and a team member will follow up if needed.")
+        return {"reply": reply, "tool_calls": out.get("tool_calls", []), "tokens": out.get("tokens", {"in": 0, "out": 0})}
 
     # ------------------------------------------------------------------ scheduler
     def tick(self, now: datetime | None = None, tenant_id: str | None = None, max_jobs: int = 10_000,

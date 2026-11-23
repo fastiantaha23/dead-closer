@@ -12,7 +12,9 @@ class Settings:
     checkpoint_path: str = field(default_factory=lambda: os.getenv("DEADCLOSER_CHECKPOINTS", "data/checkpoints.db"))
     admin_key: str = field(default_factory=lambda: os.getenv("DEADCLOSER_ADMIN_KEY", ""))
     llm_backend: str = field(default_factory=lambda: os.getenv("DEADCLOSER_LLM", "auto"))  # auto|rules|claude
-    model: str = field(default_factory=lambda: os.getenv("DEADCLOSER_MODEL", "claude-opus-5-5"))
+    model: str = field(default_factory=lambda: os.getenv("DEADCLOSER_MODEL", "claude-haiku-5-5"))
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))   # postgres:// (Neon/Supabase) => persistent
+    cors_origins: str = field(default_factory=lambda: os.getenv("CORS_ORIGINS", "*"))
     llm_timeout_s: float = field(default_factory=lambda: float(os.getenv("DEADCLOSER_LLM_TIMEOUT", "20")))
     demo_mode: bool = field(default_factory=lambda: os.getenv("DEADCLOSER_DEMO", "1") == "1")
     first_reply_sla_s: int = 60

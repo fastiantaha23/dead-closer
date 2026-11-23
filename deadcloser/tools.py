@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 from . import billing
-from .config import from_epoch, local, to_epoch
+from .config import fmt_slot, from_epoch, local, to_epoch
 from .db import Database
 from .safety import in_send_window, next_window_open
+
+
+# ---------------------------------------------------------------------------- tool-call recorder
+CALLS: ContextVar[list | None] = ContextVar("dc_tool_calls", default=None)
+
+
+def record(name: str, args: dict, result: dict) -> None:
+    """Append to the current request's tool-call log (returned by POST /chat as `tool_calls`)."""
+    lst = CALLS.get()
+    if lst is not None and len(lst) < 40:
+        lst.append({"name": name, "args": args, "result": result})
 
 
 # ---------------------------------------------------------------------------- records
@@ -21,15 +33,18 @@ def get_lead(db: Database, tenant_id: str, lead_id: str) -> dict | None:
     return db.one("SELECT * FROM leads WHERE tenant_id=? AND id=?", (tenant_id, lead_id))
 
 
-def add_message(db: Database, tenant_id: str, lead_id: str, direction: str, body: str, ts: int, meta: dict | None = None) -> int:
-    cur = db.execute("INSERT INTO messages(tenant_id,lead_id,direction,body,ts,meta) VALUES (?,?,?,?,?,?)",
-                     (tenant_id, lead_id, direction, body, ts, json.dumps(meta or {})))
-    return cur.lastrowid
+def add_message(db: Database, tenant_id: str, lead_id: str, direction: str, body: str, ts: int, meta: dict | None = None,
+                thread_id: str | None = None) -> int:
+    return db.insert_id("INSERT INTO messages(tenant_id,lead_id,thread_id,direction,body,ts,meta) VALUES (?,?,?,?,?,?,?)",
+                        (tenant_id, lead_id, thread_id, direction, body, ts, json.dumps(meta or {})))
 
 
-def list_messages(db: Database, tenant_id: str, lead_id: str, limit: int = 200) -> list[dict]:
-    return db.all("SELECT id,direction,body,ts,meta FROM messages WHERE tenant_id=? AND lead_id=? ORDER BY id DESC LIMIT ?",
-                  (tenant_id, lead_id, limit))[::-1]
+def list_messages(db: Database, tenant_id: str, lead_id: str, limit: int = 200, thread_id: str | None = None) -> list[dict]:
+    q, p = "SELECT id,direction,body,ts,meta,thread_id FROM messages WHERE tenant_id=? AND lead_id=?", [tenant_id, lead_id]
+    if thread_id is not None:
+        q += " AND thread_id=?"
+        p.append(thread_id)
+    return db.all(q + " ORDER BY id DESC LIMIT ?", (*p, limit))[::-1]
 
 
 # ---------------------------------------------------------------------------- inventory
@@ -72,7 +87,9 @@ def search_inventory(db: Database, tenant_id: str, budget_max: int | None, budge
             continue
         out.append((_pref_score(it, prefs), -abs(it["price"] - (budget_max or it["price"])), it))
     out.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return [x[2] for x in out[:limit]]
+    res = [x[2] for x in out[:limit]]
+    record("search_inventory", {"budget_max": budget_max, "prefs": prefs, "limit": limit}, {"matches": [i["title"] for i in res]})
+    return res
 
 
 def budget_fit(db: Database, tenant_id: str, budget_max: int | None) -> str:
@@ -138,6 +155,7 @@ def available_slots(db: Database, tenant: dict, now: datetime, pref: dict | None
     tz = tenant["config"]["tz_offset_min"]
     free = [s for s in generate_slots(tenant, now) if not slot_taken(db, tenant, s)]
     if not free:
+        record("check_availability", {"pref": pref}, {"slots": []})
         return []
     pref = pref or {}
     want_date, want_hour, part = pref.get("date"), pref.get("hour"), pref.get("part")
@@ -151,7 +169,9 @@ def available_slots(db: Database, tenant: dict, now: datetime, pref: dict | None
                 dd += 5
             hd = abs(l.hour - want_hour) if want_hour is not None else 0
             return (dd, hd, ts)
-        return sorted(sorted(free, key=dist)[:n])
+        res = sorted(sorted(free, key=dist)[:n])
+        record("check_availability", {"pref": pref}, {"slots": [fmt_slot(from_epoch(s), tz) for s in res]})
+        return res
     by_day: dict = {}
     for s in free:
         by_day.setdefault(local(from_epoch(s), tz).date(), []).append(s)
@@ -166,7 +186,9 @@ def available_slots(db: Database, tenant: dict, now: datetime, pref: dict | None
                 picks.append(s)
             if len(picks) == n:
                 break
-    return sorted(picks)
+    res = sorted(picks)
+    record("check_availability", {"pref": None}, {"slots": [fmt_slot(from_epoch(s), tz) for s in res]})
+    return res
 
 
 def exact_slot(db: Database, tenant: dict, now: datetime, pref: dict) -> int | None:
@@ -216,6 +238,8 @@ def book_visit(db: Database, tenant: dict, lead: dict, item_id: str | None, slot
         db.execute("INSERT INTO visits(id,tenant_id,lead_id,item_id,start_ts,status,billable,created_at) VALUES (?,?,?,?,?,'booked',?,?)",
                    (vid, tid, lead["id"], item_id, slot_ts, 1 if qualified else 0, to_epoch(now)))
         billing.charge_booking(db, tenant, vid, qualified, to_epoch(now))
+    record("book_visit", {"item_id": item_id, "slot": fmt_slot(from_epoch(slot_ts), tenant["config"]["tz_offset_min"])},
+           {"ok": True, "visit_id": vid, "billable": qualified})
     return {"ok": True, "visit": db.one("SELECT * FROM visits WHERE id=?", (vid,)), "billable": qualified}
 
 
@@ -224,6 +248,7 @@ def cancel_visit(db: Database, tenant: dict, visit_id: str, now: datetime) -> bo
     if not v:
         return False
     db.update("visits", tenant["id"], visit_id, status="cancelled")
+    record("cancel_visit", {"visit_id": visit_id}, {"ok": True})
     billing.void_for_cancel(db, tenant["id"], visit_id, to_epoch(now))
     db.execute("UPDATE jobs SET status='cancelled' WHERE tenant_id=? AND lead_id=? AND kind LIKE 'reminder%' AND payload LIKE ?",
                (tenant["id"], v["lead_id"], f'%"{visit_id}"%'))

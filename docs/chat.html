@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat with Dana - Dead Closer</title>
+<meta name="description" content="Talk to the Dead Closer assistant: ask about listings, share your budget and timeline, and book a visit.">
+<link rel="stylesheet" href="style.css">
+<style>
+  .page { padding: 28px 0 56px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .chat { height: 520px; }
+  .who { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .who label { font: 12px var(--mono); color: var(--muted); }
+  .who input { width: 150px; }
+  .tool { font: 12px var(--mono); background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-top: 6px; }
+  .tool b { color: var(--accent); }
+  .tok { font: 11px var(--mono); color: var(--muted); text-align: right; padding: 0 16px 8px; }
+  .banner { display: none; margin: 0 16px 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--bad); color: var(--bad); font-size: 13px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <a class="logo" href="./"><i></i>Dead Closer</a>
+  <div class="links"><a href="./">Overview</a><a href="chat.html">Chat</a><a href="admin.html">Admin</a></div>
+</div></nav>
+
+<div class="wrap page">
+  <h2>Chat with Dana</h2>
+  <p class="sub">Dana is the virtual assistant for Skyline Realty. She remembers you across conversations (by your user ID) and keeps each conversation separate (by thread). Try a budget and timeline, ask what she remembers, or book a visit.</p>
+  <div class="grid">
+    <div class="panel">
+      <div class="who">
+        <label for="uid">user_id</label><input type="text" id="uid" maxlength="64">
+        <label for="tid">thread_id</label><input type="text" id="tid" maxlength="64">
+        <button class="btn" id="newthread" type="button">New conversation</button>
+        <button class="btn" id="newuser" type="button">New user</button>
+      </div>
+      <div class="chat" id="chat" role="log" aria-live="polite"><div class="sys">Say hello to start.</div></div>
+      <div class="banner" id="err"></div>
+      <div class="chips" id="chips"></div>
+      <form class="composer" id="composer" autocomplete="off">
+        <input type="text" id="text" maxlength="500" placeholder="Type a message..." aria-label="Message">
+        <button class="btn primary" id="send">Send</button>
+      </form>
+      <div class="tok" id="tok"></div>
+    </div>
+    <div class="panel">
+      <h3><span>What the agent did</span><span class="pill" id="api-mode">connecting</span></h3>
+      <div class="brain">
+        <div class="subhead">Tool calls (last reply)</div><div id="tools"><span class="clock">none yet</span></div>
+        <div class="subhead">Memory design</div>
+        <ul class="list">
+          <li><span class="k">short-term</span><span>per thread_id (LangGraph checkpoint)</span></li>
+          <li><span class="k">long-term</span><span>per user_id (Postgres)</span></li>
+          <li><span class="k">isolation</span><span>every query scoped to the user</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  let API = new URLSearchParams(location.search).get("api") || window.DEADCLOSER_API || "";
+  if (API && !API.endsWith("/")) API += "/";
+  const rnd = () => Math.random().toString(36).slice(2, 8);
+  const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+  $("#uid").value = store.get("dc_user") || "user-" + rnd();
+  $("#tid").value = store.get("dc_thread") || "thread-" + rnd();
+  const save = () => { store.set("dc_user", $("#uid").value.trim()); store.set("dc_thread", $("#tid").value.trim()); };
+  const CHIPS = ["Hi, I'm looking for a 3 bedroom home", "My name is Sam. Budget is around 480k, moving in 2 months", "How much is the Mueller home?", "1",
+                 "What do you know about me?", "What did I just ask?", "Can I see it Saturday at 11am?", "Cancel my visit", "What is the capital of France?"];
+  CHIPS.forEach((t) => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.textContent = t; b.onclick = () => send(t); $("#chips").appendChild(b); });
+
+  function add(who, text, extra) {
+    const d = document.createElement("div"); d.className = "msg " + who; d.textContent = text;
+    $("#chat").appendChild(d); $("#chat").scrollTop = $("#chat").scrollHeight; return d;
+  }
+  function showTools(calls) {
+    const box = $("#tools"); box.textContent = "";
+    if (!calls || !calls.length) { box.innerHTML = '<span class="clock">no tools needed</span>'; return; }
+    calls.slice(0, 12).forEach((c) => {
+      const d = document.createElement("div"); d.className = "tool";
+      const b = document.createElement("b"); b.textContent = c.name;
+      d.append(b, document.createTextNode(" " + JSON.stringify(c.args).slice(0, 90) + " → " + JSON.stringify(c.result).slice(0, 90)));
+      box.appendChild(d);
+    });
+  }
+  let busy = false;
+  async function send(text) {
+    text = (text || "").trim(); if (!text || busy) return;
+    const user = $("#uid").value.trim(), thread = $("#tid").value.trim(); save();
+    $("#text").value = ""; $("#err").style.display = "none"; add("lead", text); busy = true;
+    const wait = add("agent", "…");
+    try {
+      const r = await fetch(API + "chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user, thread_id: thread, message: text }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+      const d = await r.json(); wait.textContent = d.reply; showTools(d.tool_calls);
+      $("#tok").textContent = "tokens in/out: " + d.tokens.in + " / " + d.tokens.out;
+    } catch (e) {
+      wait.remove(); $("#err").style.display = "block";
+      $("#err").textContent = "Could not reach the agent API (" + e.message + "). Set the API address in config.js or use ?api=https://your-agent-host/";
+    }
+    busy = false;
+  }
+  $("#composer").onsubmit = (e) => { e.preventDefault(); send($("#text").value); };
+  $("#newthread").onclick = () => { $("#tid").value = "thread-" + rnd(); save(); $("#chat").textContent = ""; add("agent", "New conversation started. I still remember you."); };
+  $("#newuser").onclick = () => { $("#uid").value = "user-" + rnd(); $("#tid").value = "thread-" + rnd(); save(); $("#chat").textContent = ""; add("agent", "New user: a clean slate."); };
+  fetch(API + "health").then((r) => r.text()).then((t) => { $("#api-mode").textContent = t.trim() === "ok" ? "API online" : "API ?"; $("#api-mode").className = "pill booked"; })
+    .catch(() => { $("#api-mode").textContent = "API offline"; $("#api-mode").className = "pill handoff"; });
+})();
+</script>
+</body>
+</html>

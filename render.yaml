@@ -1,20 +1,23 @@
-# One-click deploy: Render -> New -> Blueprint -> pick this repo.
+# Render (free tier) alternative to Hugging Face Spaces: Render -> New -> Blueprint -> pick this repo.
+# Memory lives in a free hosted Postgres (Neon / Supabase), NOT on Render's ephemeral disk.
 services:
   - type: web
-    name: dead-closer
+    name: dead-closer-api
     runtime: docker
     plan: free
     healthCheckPath: /health
     envVars:
-      - key: DEADCLOSER_ADMIN_KEY      # create tenants with: POST /admin/tenants (header X-Admin-Key)
-        generateValue: true
-      - key: DEADCLOSER_DEMO           # public sandbox demo on the website
-        value: "1"
-      - key: DEADCLOSER_DB             # free plan has an ephemeral disk; attach a Render Disk at /data for persistence
-        value: /tmp/deadcloser.db
-      - key: DEADCLOSER_CHECKPOINTS
-        value: /tmp/checkpoints.db
-      - key: DEADCLOSER_LLM            # auto = Claude if ANTHROPIC_API_KEY is set, otherwise the offline rules engine
-        value: auto
-      - key: ANTHROPIC_API_KEY         # optional
+      - key: DATABASE_URL            # postgresql://... from Neon or Supabase (add in the dashboard)
         sync: false
+      - key: ANTHROPIC_API_KEY       # your workshop key (add in the dashboard; never commit it)
+        sync: false
+      - key: DEADCLOSER_ADMIN_KEY    # protects /admin/* and the admin dashboard
+        generateValue: true
+      - key: DEADCLOSER_MODEL
+        value: claude-haiku-5-5
+      - key: DEADCLOSER_LLM
+        value: auto
+      - key: CHAT_TENANT
+        value: demo_realty
+      - key: CORS_ORIGINS
+        value: "*"

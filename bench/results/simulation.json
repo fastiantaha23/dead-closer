@@ -70,50 +70,50 @@
   "variants": {
     "full": {
       "booking_rate": [
-        0.303,
-        0.016
+        0.306,
+        0.024
       ],
       "revenue_per_100_leads_usd": [
-        1023.333,
-        15.456
+        1025.0,
+        47.566
       ],
       "billable_share_of_bookings": [
-        0.741,
-        0.035
+        0.734,
+        0.021
       ],
       "bookings_after_followup_pct": [
-        36.1,
-        3.759
+        36.4,
+        5.356
       ],
       "engagement_rate": [
         0.949,
         0.014
       ],
       "billable_from_low_intent_leads": [
-        3.667,
-        1.247
+        3.333,
+        0.471
       ],
       "bookings_from_low_intent_leads": [
-        8.667,
-        3.399
+        8.333,
+        2.055
       ],
       "first_reply_p95_ms": [
-        145.333,
-        7.587
+        96.667,
+        7.717
       ]
     },
     "no_followups": {
       "booking_rate": [
-        0.202,
-        0.01
+        0.195,
+        0.006
       ],
       "revenue_per_100_leads_usd": [
-        700.0,
-        38.784
+        667.5,
+        28.062
       ],
       "billable_share_of_bookings": [
-        0.762,
-        0.008
+        0.756,
+        0.009
       ],
       "bookings_after_followup_pct": [
         0.0,
@@ -124,68 +124,68 @@
         0.015
       ],
       "billable_from_low_intent_leads": [
-        2.333,
-        0.471
+        2,
+        0.816
       ],
       "bookings_from_low_intent_leads": [
         5.333,
         0.943
       ],
       "first_reply_p95_ms": [
-        200,
-        17.664
+        99,
+        2.449
       ]
     },
     "no_qualification": {
       "booking_rate": [
-        0.337,
-        0.02
+        0.335,
+        0.021
       ],
       "revenue_per_100_leads_usd": [
-        430.0,
-        93.964
+        423.333,
+        71.132
       ],
       "billable_share_of_bookings": [
         0.275,
-        0.041
+        0.029
       ],
       "bookings_after_followup_pct": [
-        34.067,
-        1.974
+        35.0,
+        1.445
       ],
       "engagement_rate": [
         0.939,
         0.015
       ],
       "billable_from_low_intent_leads": [
-        2,
-        0.816
+        1.667,
+        0.471
       ],
       "bookings_from_low_intent_leads": [
-        12,
-        2.16
+        12.333,
+        2.867
       ],
       "first_reply_p95_ms": [
-        139.667,
-        4.784
+        74,
+        5.715
       ]
     },
     "slow_response": {
       "booking_rate": [
-        0.127,
+        0.128,
         0.008
       ],
       "revenue_per_100_leads_usd": [
-        435.0,
-        16.33
+        447.5,
+        25.577
       ],
       "billable_share_of_bookings": [
-        0.765,
-        0.035
+        0.773,
+        0.013
       ],
       "bookings_after_followup_pct": [
-        34.4,
-        3.75
+        34.6,
+        4.815
       ],
       "engagement_rate": [
         0.903,
@@ -196,12 +196,12 @@
         0.816
       ],
       "bookings_from_low_intent_leads": [
-        5,
-        1.414
+        4.667,
+        1.247
       ],
       "first_reply_p95_ms": [
-        136.667,
-        8.957
+        45,
+        1.414
       ]
     }
   },
@@ -209,22 +209,22 @@
     "variant": "full",
     "leads": 400,
     "first_reply_ms": {
-      "p50": 52,
-      "p95": 135,
-      "p99": 417,
-      "max": 1275
+      "p50": 34,
+      "p95": 100,
+      "p99": 151,
+      "max": 387
     },
     "within_60s_pct": 100.0,
     "engagement_rate": 0.93,
-    "booking_rate": 0.292,
-    "visits_booked": 117,
-    "billable_visits": 90,
-    "revenue_usd": 4040.0,
-    "revenue_per_100_leads_usd": 1010.0,
-    "billable_share_of_bookings": 0.769,
-    "billable_from_low_intent_leads": 5,
-    "bookings_from_low_intent_leads": 10,
-    "bookings_after_followup_pct": 35.9,
+    "booking_rate": 0.282,
+    "visits_booked": 113,
+    "billable_visits": 86,
+    "revenue_usd": 3910.0,
+    "revenue_per_100_leads_usd": 977.5,
+    "billable_share_of_bookings": 0.761,
+    "billable_from_low_intent_leads": 4,
+    "bookings_from_low_intent_leads": 8,
+    "bookings_after_followup_pct": 31.0,
     "by_persona": {
       "disinterested": {
         "leads": 32,
@@ -233,28 +233,28 @@
       },
       "warm_buyer": {
         "leads": 114,
-        "booked": 54,
-        "billable": 38
+        "booked": 52,
+        "billable": 37
       },
       "ghoster": {
         "leads": 76,
-        "booked": 3,
-        "billable": 3
+        "booked": 1,
+        "billable": 1
       },
       "hot_buyer": {
         "leads": 55,
-        "booked": 50,
+        "booked": 52,
         "billable": 44
       },
       "browser": {
         "leads": 56,
-        "booked": 5,
+        "booked": 4,
         "billable": 0
       },
       "price_sensitive": {
         "leads": 46,
-        "booked": 5,
-        "billable": 5
+        "booked": 4,
+        "billable": 4
       },
       "adversarial": {
         "leads": 21,
@@ -264,60 +264,60 @@
     },
     "extraction": {
       "budget_accuracy": 0.971,
-      "budget_n": 209,
-      "timeline_accuracy": 0.942,
+      "budget_n": 206,
+      "timeline_accuracy": 0.938,
       "timeline_n": 208,
-      "browsing_detection": 0.938,
-      "browsing_n": 16
+      "browsing_detection": 0.867,
+      "browsing_n": 15
     },
     "compliance": {
       "messages_after_opt_out": 0,
       "proactive_outside_window": 0,
-      "max_outbound_per_lead": 16,
+      "max_outbound_per_lead": 60,
       "median_outbound_per_lead": 7.0,
       "opted_out_leads": 0,
-      "handed_to_human": 12
+      "handed_to_human": 6
     },
     "playbook": {
       "availability": {
-        "tries": 80,
-        "wins": 4,
-        "reply_rate": 0.05
+        "tries": 86,
+        "wins": 3,
+        "reply_rate": 0.035
       },
       "breakup": {
-        "tries": 133,
-        "wins": 8,
-        "reply_rate": 0.06
+        "tries": 138,
+        "wins": 7,
+        "reply_rate": 0.051
       },
       "checkin": {
-        "tries": 155,
-        "wins": 21,
-        "reply_rate": 0.135
+        "tries": 157,
+        "wins": 22,
+        "reply_rate": 0.14
       },
       "easy_choice": {
-        "tries": 88,
-        "wins": 5,
-        "reply_rate": 0.057
+        "tries": 105,
+        "wins": 8,
+        "reply_rate": 0.076
       },
       "low_pressure": {
-        "tries": 136,
-        "wins": 8,
-        "reply_rate": 0.059
+        "tries": 140,
+        "wins": 5,
+        "reply_rate": 0.036
       },
       "new_match": {
-        "tries": 74,
-        "wins": 6,
-        "reply_rate": 0.081
+        "tries": 76,
+        "wins": 5,
+        "reply_rate": 0.066
       },
       "question_prompt": {
-        "tries": 93,
-        "wins": 6,
-        "reply_rate": 0.065
+        "tries": 84,
+        "wins": 5,
+        "reply_rate": 0.06
       },
       "value_add": {
-        "tries": 89,
-        "wins": 5,
-        "reply_rate": 0.056
+        "tries": 81,
+        "wins": 3,
+        "reply_rate": 0.037
       }
     }
   },
@@ -327,78 +327,78 @@
       0.004
     ],
     "timeline_accuracy": [
-      0.94,
-      0.02
+      0.938,
+      0.016
     ],
     "browsing_detection": [
-      0.946,
-      0.041
+      0.922,
+      0.057
     ],
-    "budget_n": 641,
-    "timeline_n": 642,
-    "browsing_n": 33
+    "budget_n": 639,
+    "timeline_n": 643,
+    "browsing_n": 31
   },
   "compliance": {
     "messages_after_opt_out": 0,
     "proactive_outside_window": 0,
-    "max_outbound_per_lead": 17,
+    "max_outbound_per_lead": 60,
     "median_outbound_per_lead": 7.0,
     "opted_out_leads": 5,
-    "handed_to_human": 12
+    "handed_to_human": 6
   },
   "speed": {
     "within_60s_pct": 100.0,
     "p50_ms": [
-      53.333,
+      33.333,
       0.943
     ],
     "p95_ms": [
-      145.333,
-      7.587
+      96.667,
+      7.717
     ],
     "p99_ms": [
-      340,
-      76.894
+      197,
+      32.619
     ],
-    "max_ms": 1275
+    "max_ms": 484
   },
   "load_test": {
     "concurrent_leads": 300,
     "workers": 32,
-    "wall_seconds": 27.9,
-    "leads_per_second": 10.8,
+    "wall_seconds": 15.53,
+    "leads_per_second": 19.3,
     "first_reply_ms": {
-      "p50": 1536,
-      "p95": 2074,
-      "p99": 2255,
-      "max": 2459
+      "p50": 877,
+      "p95": 1292,
+      "p99": 1415,
+      "max": 1568
     },
     "within_60s_pct": 100.0,
     "backend": "sqlite file + sqlite checkpointer"
   },
   "speed_quiet": {
     "leads": 300,
-    "p50_ms": 24,
-    "p95_ms": 54,
-    "p99_ms": 102,
-    "max_ms": 115,
+    "p50_ms": 15,
+    "p95_ms": 45,
+    "p99_ms": 78,
+    "max_ms": 119,
     "within_60s_pct": 100.0,
     "backend": "sqlite file + sqlite checkpointer, idle machine"
   },
   "speed_under_contention": {
     "within_60s_pct": 100.0,
     "p50_ms": [
-      53.333,
+      33.333,
       0.943
     ],
     "p95_ms": [
-      145.333,
-      7.587
+      96.667,
+      7.717
     ],
     "p99_ms": [
-      340,
-      76.894
+      197,
+      32.619
     ],
-    "max_ms": 1275
+    "max_ms": 484
   }
 }

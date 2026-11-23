@@ -30,7 +30,7 @@ def main() -> None:
          f"p95 {sc['p95_ms'][0]:.0f} ms, p99 {sc['p99_ms'][0]:.0f} ms, worst {sc['max_ms']} ms, {sc['within_60s_pct']}% within 60 s.", ""]
     lt = sim["load_test"]
     L += [f"Burst load test: **{lt['concurrent_leads']} simultaneous new leads** (+ a reply each) on {lt['backend']} with {lt['workers']} workers: "
-          f"sustained {lt['leads_per_second']} new-lead conversations/s (one instance, 32 client threads, 28 s burst - do not extrapolate to hourly volume without a soak test), first reply p50 {lt['first_reply_ms']['p50']} ms, p95 {lt['first_reply_ms']['p95']} ms, "
+          f"sustained {lt['leads_per_second']} new-lead conversations/s (one instance, 32 client threads, single short burst - do not extrapolate to hourly volume without a soak test), first reply p50 {lt['first_reply_ms']['p50']} ms, p95 {lt['first_reply_ms']['p95']} ms, "
           f"p99 {lt['first_reply_ms']['p99']} ms, max {lt['first_reply_ms']['max']} ms, {lt['within_60s_pct']}% within the SLA.", "",
           "All 300 leads of the burst were answered inside the SLA; the queue is serialized by SQLite + the GIL, so the burst p95 is the time to drain the queue. "
           "With the Claude backend enabled add model latency per call (understand + compose, so two calls per message; not measured here). "

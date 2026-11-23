@@ -35,6 +35,8 @@ def main() -> None:
             bench[name] = d
     json.dump(bench, open(os.path.join(out, "results.json"), "w", encoding="utf-8"))
     shutil.copy(os.path.join(res, "replay.json"), os.path.join(out, "replay.json"))
+    if os.path.exists(os.path.join(res, "demo.gif")):
+        shutil.copy(os.path.join(res, "demo.gif"), os.path.join(out, "demo.gif"))
     with open(os.path.join(out, "config.js"), "w", encoding="utf-8") as fh:
         fh.write(f'window.DEADCLOSER_API = {json.dumps(a.api)};\nwindow.DEADCLOSER_REPO = {json.dumps(a.repo)};\n')
     open(os.path.join(out, ".nojekyll"), "w").close()

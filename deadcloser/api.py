@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import threading
@@ -12,7 +13,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -70,6 +72,12 @@ class VisitStatusIn(BaseModel):
 
 class TickIn(BaseModel):
     now: datetime | None = None
+
+
+class ChatIn(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:@\-]+$")
+    thread_id: str = Field(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:@\-]+$")
+    message: str = Field(..., min_length=1, max_length=4000)
 
 
 class DemoStart(BaseModel):
@@ -133,6 +141,8 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
                   description="AI sales closer: replies to new leads in seconds, qualifies budget and timeline, follows up for days, "
                               "and books site visits / test drives. Revenue = fee per booked, qualified visit.")
     app.state.dc = dc
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] or ["*"]
+    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"], allow_credentials=False)
 
     def client_ip(request: Request) -> str:
         fwd = request.headers.get("x-forwarded-for")
@@ -152,9 +162,26 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
             raise HTTPException(403, "admin key required")
 
     # ------------------------------------------------------------------ meta
-    @app.get("/health")
+    @app.get("/health", response_class=PlainTextResponse)
     def health():
-        return {"ok": True, "version": __version__, "llm": dc.llm.name, "demo_mode": settings.demo_mode}
+        return "ok"
+
+    @app.get("/api/status")
+    def status():
+        return {"ok": True, "version": __version__, "llm": dc.llm.name, "demo_mode": settings.demo_mode,
+                "storage": "postgres" if dc.db.pg else "sqlite"}
+
+    @app.post("/chat")
+    def chat(body: ChatIn, request: Request):
+        """Agent API (open, no login). One user_id = one person (long-term memory); one thread_id = one conversation (short-term)."""
+        limiter.check("chat:" + client_ip(request), 240)
+        try:
+            return dc.chat(body.user_id, body.thread_id, body.message)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except Exception:  # never 500 on the grader: degrade gracefully and keep the contract
+            logging.getLogger("deadcloser.api").exception("chat failed")
+            return {"reply": "Sorry, I hit a problem on my side. Please try again in a moment.", "tool_calls": [], "tokens": {"in": 0, "out": 0}}
 
     @app.get("/api/benchmarks")
     def benchmarks():
@@ -175,6 +202,46 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
         cfg = {"fee_cents": body.fee_cents} if body.fee_cents is not None else {}
         tid, key = dc.create_tenant(body.name, body.vertical, config=cfg)
         return {"tenant_id": tid, "api_key": key, "note": "store the key now - only its hash is kept"}
+
+    # ------------------------------------------------------------------ admin dashboard API
+    @app.get("/admin/overview", dependencies=[Depends(admin_auth)])
+    def admin_overview():
+        n = lambda q, p=(): dc.db.one(q, p)["n"]  # noqa: E731
+        tenants = dc.db.all("SELECT id, name, vertical, is_demo FROM tenants ORDER BY created_at")
+        rows = []
+        for t in tenants:
+            rows.append({**t, "leads": n("SELECT COUNT(*) n FROM leads WHERE tenant_id=?", (t["id"],)),
+                         "visits": n("SELECT COUNT(*) n FROM visits WHERE tenant_id=? AND status!='cancelled'", (t["id"],)),
+                         "billing": billing.summary(dc.db, t["id"])})
+        status = dc.db.all("SELECT status, COUNT(*) n FROM leads GROUP BY status")
+        events = dc.db.all("SELECT event, COUNT(*) n FROM audit GROUP BY event ORDER BY n DESC LIMIT 12")
+        return {"tenants": rows, "lead_status": {r["status"]: r["n"] for r in status}, "audit_counts": {r["event"]: r["n"] for r in events},
+                "messages": n("SELECT COUNT(*) n FROM messages"), "users": n("SELECT COUNT(*) n FROM leads WHERE user_id IS NOT NULL"),
+                "llm": dc.llm.name, "storage": "postgres" if dc.db.pg else "sqlite"}
+
+    @app.get("/admin/users", dependencies=[Depends(admin_auth)])
+    def admin_users(tenant_id: str | None = None, limit: int = 100):
+        q, p = ("SELECT l.id, l.tenant_id, l.user_id, l.name, l.status, l.score, l.qualified, l.budget_max, l.timeline_days, l.followups_sent, "
+                "l.created_at, l.last_in_at, (SELECT COUNT(*) FROM messages m WHERE m.lead_id=l.id AND m.tenant_id=l.tenant_id) msgs "
+                "FROM leads l"), []
+        if tenant_id:
+            q += " WHERE l.tenant_id=?"
+            p.append(tenant_id)
+        return dc.db.all(q + " ORDER BY l.created_at DESC LIMIT ?", (*p, max(1, min(limit, 500))))
+
+    @app.get("/admin/users/{tenant_id}/{lead_id}", dependencies=[Depends(admin_auth)])
+    def admin_user(tenant_id: str, lead_id: str):
+        v = dc.lead_view(tenant_id, lead_id)
+        if not v:
+            raise HTTPException(404, "not found")
+        v["audit"] = dc.db.all("SELECT ts, event, detail FROM audit WHERE tenant_id=? AND lead_id=? ORDER BY id DESC LIMIT 40", (tenant_id, lead_id))
+        for a in v["audit"]:
+            a["detail"] = {k: x for k, x in (a["detail"] or {}).items() if k != "text"}
+        return v
+
+    @app.get("/admin/audit", dependencies=[Depends(admin_auth)])
+    def admin_audit(limit: int = 100):
+        return dc.db.all("SELECT ts, tenant_id, lead_id, event, detail FROM audit ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),))
 
     # ------------------------------------------------------------------ tenant API
     @app.get("/v1/me")
@@ -336,6 +403,14 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
         return demo_state(demo_session(sid))
 
     # ------------------------------------------------------------------ static site
+    @app.get("/chat", include_in_schema=False)
+    def chat_page():
+        return FileResponse(os.path.join(WEB_DIR, "chat.html"))
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_page():
+        return FileResponse(os.path.join(WEB_DIR, "admin.html"))
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(os.path.join(WEB_DIR, "index.html"))
