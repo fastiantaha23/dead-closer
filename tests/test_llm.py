@@ -62,13 +62,27 @@ def test_understand_uses_structured_tool_output(claude):
     assert "<lead_message>" in call["messages"][0]["content"]    # lead text is fenced as untrusted data
 
 
+def test_model_not_called_when_rules_already_understand(claude):
+    claude.client = SimpleNamespace(messages=FakeMessages(lambda kw: (_ for _ in ()).throw(AssertionError("model must not be called"))))
+    out = claude.understand("my budget is 450k, moving in 2 months", ctx())
+    assert out["budget_max"] == 450000 and out["timeline_days"] == 60
+    assert claude.understand("What did I just ask you?", ctx())["intents"] == ["ask_recap"]   # stays rule-labelled, no call
+
+
+def test_claude_fills_gaps_and_rules_win_on_conflict(claude):
+    claude.client = SimpleNamespace(messages=FakeMessages(lambda kw: tool_use({"intents": ["ask_price"], "budget_max": 999999})))
+    out = claude.understand("yo whats the damage on that mueller place", ctx())      # rules: nothing -> Claude adds ask_price
+    assert "ask_price" in out["intents"] and out["budget_max"] == 999999
+
+
 def test_understand_falls_back_on_error_and_refusal(claude):
     def boom(kw):
         raise RuntimeError("network down")
+    text = "hmmm so what is the damage on that mueller place"
     claude.client = SimpleNamespace(messages=FakeMessages(boom))
-    assert claude.understand("budget 450k", ctx())["budget_max"] == 450000
+    assert claude.understand(text, ctx())["intents"] == []                        # falls back to the rule parse
     claude.client = SimpleNamespace(messages=FakeMessages(lambda kw: SimpleNamespace(stop_reason="refusal", content=[])))
-    assert claude.understand("budget 450k", ctx())["budget_max"] == 450000
+    assert claude.understand(text, ctx())["intents"] == []
     assert claude.errors == 2
 
 

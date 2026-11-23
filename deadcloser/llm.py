@@ -75,8 +75,8 @@ def _clean_understanding(raw: dict) -> dict:
     prefs = {}
     if intval(raw.get("bedrooms"), 0, 12) is not None:
         prefs["bedrooms"] = intval(raw["bedrooms"], 0, 12)
-    if isinstance(raw.get("body"), str):
-        prefs["body"] = raw["body"].lower()[:20]
+    if isinstance(raw.get("body"), str) and raw["body"].lower().strip() in ("suv", "sedan", "truck", "hatchback", "coupe", "minivan", "van", "convertible"):
+        prefs["body"] = raw["body"].lower().strip()      # closed vocabulary only: free text here would poison the listing search
     idx = intval(raw.get("slot_index"), 1, 3)
     hour = intval(raw.get("slot_hour"), 0, 23)
     date = raw.get("slot_date") if isinstance(raw.get("slot_date"), str) and len(raw["slot_date"]) == 10 else None
@@ -98,6 +98,13 @@ TEMPLATE_ONLY = {"propose_slots", "propose_slots_alt", "confirm_slot", "confirm_
                  "pii_warning", "off_topic", "fair_housing_decline", "no_promises", "ai_disclosure", "recall_memory", "recap_chat",
                  "clarify_budget", "clarify_slot", "no_slots", "no_visit_to_cancel", "see_you", "unknown_detail", "answer_financing"}
 _TRIVIAL = re.compile(r"^\W*(?:yes|no|ok|okay|yep|yeah|nope|sure|stop|start|y|n|[1-3]|thanks|thank you)\W*$", re.I)
+
+
+def _confident(base: dict) -> bool:
+    """True when the rule parser found something concrete, so a model call would add cost but no information."""
+    return bool(set(base["intents"]) - {"greet", "question"}) or any(
+        base.get(k) is not None for k in ("budget_min", "budget_max", "timeline_days")) or bool(base.get("browsing")) or bool(base["prefs"]) \
+        or any(base["slot"].get(k) not in (None, False) for k in ("date", "hour", "index", "part", "weekend")) or bool(base.get("name"))
 
 
 class RuleLLM:
@@ -128,8 +135,8 @@ class ClaudeLLM(RuleLLM):
 
     def understand(self, text: str, ctx: dict) -> dict:
         base = nlu.understand(text, ctx)  # deterministic baseline (also supplies fields Claude is not asked for)
-        if _TRIVIAL.match(text) or len(text.strip()) <= 2:
-            return base                                   # nothing for a model to add: save the call
+        if _TRIVIAL.match(text) or len(text.strip()) <= 2 or _confident(base):
+            return base            # the deterministic parser already understood it: no model call (cheaper, faster, stable)
         try:
             resp = self._create(
                 max_tokens=1024,
@@ -144,13 +151,19 @@ class ClaudeLLM(RuleLLM):
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "record_understanding":
                     out = _clean_understanding(block.input)
-                    # keep rule-derived fields the LLM was not asked about / commonly misses
+                    # Claude is the fallback for phrasing the rules could not parse: rule-derived values win, Claude fills the gaps
+                    for k in ("budget_min", "budget_max", "timeline_days", "timeline_text", "name"):
+                        if base.get(k) is not None:
+                            out[k] = base[k]
+                    out["budget_monthly"] = out["budget_monthly"] or base["budget_monthly"]
+                    out["browsing"] = out["browsing"] or base["browsing"]
                     out["item_id"], out["sentiment"] = base["item_id"], base["sentiment"]
                     out["budget_ambiguous"] = base["budget_ambiguous"]
-                    out["prefs"] = {**base["prefs"], **out["prefs"]}
-                    out["slot"]["part"], out["slot"]["weekend"] = base["slot"]["part"], base["slot"]["weekend"]
-                    if out["slot"]["date"] is None:
-                        out["slot"]["date"] = base["slot"]["date"]
+                    out["prefs"] = {**out["prefs"], **base["prefs"]}
+                    for k in ("date", "hour", "index", "part", "weekend"):
+                        if base["slot"].get(k) not in (None, False):
+                            out["slot"][k] = base["slot"][k]
+                    out["intents"] = sorted(set(out["intents"]) | (set(base["intents"]) - {"question"}))
                     return out
             raise RuntimeError("no tool call")
         except Exception as e:  # network, auth, refusal, schema... never block the reply
@@ -160,14 +173,14 @@ class ClaudeLLM(RuleLLM):
 
     def compose(self, plan: dict, rc: dict, history: list[dict], memory: str) -> str:
         draft = nlg.render(plan, rc)
-        if all(seg["t"] in TEMPLATE_ONLY for seg in plan["segments"]):
-            return draft
+        if any(seg["t"] in TEMPLATE_ONLY for seg in plan["segments"]):
+            return draft                                  # exact wording required somewhere in the message: do not risk a rewrite
         slots = [nlg.slot_label(s, rc["tz"]) for seg in plan["segments"] for s in seg.get("slots", [])]
         slots += [nlg.slot_label(seg["slot"], rc["tz"]) for seg in plan["segments"] if "slot" in seg]
         try:
             convo = "\n".join(f"{'Lead' if h['direction'] == 'in' else 'You'}: {h['body'][:300]}" for h in history[-6:])
             resp = self._create(
-                max_tokens=600,
+                max_tokens=500, thinking={"type": "disabled"},   # plain SMS rewrite: no reasoning budget needed
                 system=COMPOSE_SYSTEM.format(agent=rc["agent"], biz=rc["biz"]),
                 messages=[{"role": "user", "content":
                            f"Lead name: {rc.get('name') or 'unknown'}\nWhat we remember: {memory}\n"

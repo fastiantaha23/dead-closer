@@ -6,8 +6,9 @@ An AI sales agent for **real-estate agencies** (site visits) and **car dealers**
 
 | | |
 |---|---|
-| Website (GitHub Pages, replay mode) | https://fastiantaha23.github.io/dead-closer/ |
-| Website (Vercel) + Agent API (Hugging Face / Render) | set after deploy, see [Deploy](#deploy-free-tier) |
+| **Live website** (customer chat, admin dashboard, demo) | https://dead-closer.vercel.app |
+| **Agent API base URL** (`POST /chat`, `GET /health`) | https://dead-closer.vercel.app |
+| Static mirror (GitHub Pages) | https://fastiantaha23.github.io/dead-closer/ |
 | Benchmarks | [RESULTS.md](RESULTS.md) |
 | Own test cases | [tests.json](tests.json) (10 cases, runner in `scripts/run_tests_json.py`) |
 
@@ -24,7 +25,7 @@ An AI sales agent for **real-estate agencies** (site visits) and **car dealers**
 | Safety | refuses off-topic and prompt injection, asks YES before cancelling or booking an un-offered time, STOP/START, PII redaction, no invented prices/promises, fair-housing guard |
 | Model | `claude-haiku-5-5` (`DEADCLOSER_MODEL`), at most 2 small calls per message; compliance/slot messages use exact templates with no model call |
 | `POST /chat`, `GET /health` | open, no login; `/chat` returns exactly `{reply, tool_calls, tokens}`, `/health` returns `ok` |
-| Hosted Postgres memory | `DATABASE_URL` (Neon / Supabase); nothing important is in process memory |
+| Hosted Postgres memory | `DATABASE_URL` (Neon); nothing important is in process memory |
 | `.env.example`, `tests.json`, benchmark table, memory note | in this repo, below |
 
 ## Architecture
@@ -33,7 +34,7 @@ An AI sales agent for **real-estate agencies** (site visits) and **car dealers**
 flowchart LR
   U[Customer page<br/>Vercel static site] -->|POST /chat| API
   A[Admin dashboard<br/>X-Admin-Key] -->|/admin/*| API
-  subgraph API[Agent API - FastAPI on Hugging Face Space / Render]
+  subgraph API[Agent API - FastAPI, Vercel serverless function]
     direction TB
     G[LangGraph state machine] --> T[Tools]
     G --> S[Safety guards<br/>input + output, plain code]
@@ -94,27 +95,30 @@ curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
   -d '{"user_id":"sam","thread_id":"t1","message":"Hi, I am Sam, budget 480k, moving in 2 months"}'
 # -> {"reply": "...", "tool_calls": [{"name":"save_memory",...}, {"name":"check_availability",...}], "tokens": {"in": 0, "out": 0}}
 
-pytest -q                                                    # 74 tests (includes a real embedded Postgres)
+pytest -q                                                    # 77 tests (includes a real embedded Postgres)
 python scripts/run_tests_json.py --local                     # tests.json against an in-process app
 python scripts/run_tests_json.py --url https://<your-agent>  # ... or against a deployment
 ```
 
 ## Deploy (free tier)
 
-1. **Postgres (Neon or Supabase):** create a free project, copy the connection string (`postgresql://...?sslmode=require`). Tables and LangGraph checkpoint tables are created automatically on first start.
-2. **Agent API on Hugging Face Spaces (Docker):** create a write token, then
+Website and agent API ship as **one Vercel project** (static site in `public/`, the FastAPI app as a Python serverless function). The function is stateless: all memory is in Postgres, so cold starts and restarts lose nothing, and there is no sleeping free-tier server (Hugging Face Docker Spaces now need PRO and Render's free tier sleeps; `render.yaml` and `scripts/deploy_hf.py` remain as alternatives).
+
+1. **Postgres (Neon or Supabase):** create a free project and copy the connection string (`postgresql://...?sslmode=require`). Tables and the LangGraph checkpoint tables are created automatically on first start.
+2. **Assemble and deploy:**
    ```bash
-   pip install huggingface_hub
-   export HF_TOKEN=hf_...  DATABASE_URL=postgresql://...  ANTHROPIC_API_KEY=sk-ant-...  DEADCLOSER_ADMIN_KEY=$(openssl rand -hex 24)
-   python scripts/deploy_hf.py --space YOUR_USER/dead-closer
+   python scripts/build_vercel.py --repo https://github.com/YOUR_USER/dead-closer       # -> deploy/vercel
+   cd deploy/vercel
+   npx vercel link --yes --project dead-closer --token $VERCEL_TOKEN
+   npx vercel git disconnect --yes --token $VERCEL_TOKEN                                 # deploy the bundle, not the repo root
+   for k in DATABASE_URL ANTHROPIC_API_KEY DEADCLOSER_ADMIN_KEY; do printf '%s' "${!k}" | npx vercel env add $k production --sensitive --token $VERCEL_TOKEN; done
+   printf claude-haiku-5-5 | npx vercel env add DEADCLOSER_MODEL production --token $VERCEL_TOKEN
+   printf demo_realty      | npx vercel env add CHAT_TENANT production --token $VERCEL_TOKEN
+   npx vercel deploy --prod --yes --token $VERCEL_TOKEN
    ```
-   Keys are set as Space *secrets* from your environment, never committed. API base URL: `https://YOUR_USER-dead-closer.hf.space`. (Render alternative: New -> Blueprint -> this repo, then add `DATABASE_URL` and `ANTHROPIC_API_KEY` in the dashboard; `render.yaml` is included.)
-3. **Website on Vercel:** build the static site pointing at your API, then deploy the `docs/` folder:
-   ```bash
-   python scripts/build_site.py --repo https://github.com/YOUR_USER/dead-closer --api https://YOUR_USER-dead-closer.hf.space/
-   npx vercel deploy docs --prod --yes        # or: import the repo in Vercel, Framework "Other", Root Directory "docs"
-   ```
-4. Check: `<api>/health` -> `ok`; open `<site>/chat.html`; `<site>/admin.html` with your admin key; `python scripts/run_tests_json.py --url <api>`.
+3. **Check:** `curl https://<project>.vercel.app/health` -> `ok`; open `/chat.html` and `/admin.html` (admin key = `DEADCLOSER_ADMIN_KEY`); `python scripts/run_tests_json.py --url https://<project>.vercel.app`.
+
+Secrets live only in Vercel environment variables (marked sensitive) - never in the repo.
 
 ## Benchmarks
 
@@ -126,7 +130,8 @@ Everything below runs offline on the rules engine (no model calls) - see [RESULT
 | Burst of 300 simultaneous leads (SQLite, one instance) | all answered in <= 1.6 s | measured |
 | Budget / timeline read correctly (n = 639 / 643) | **96.9% / 93.8%** | measured vs ground truth |
 | Safety suite (opt-out, injection, PII, fair housing, honesty, escalation, billing, isolation, off-topic, confirmation, robustness) | **118/118** (first run 92/100; bugs fixed) | measured, author-written |
-| `tests.json` (own 10 cases) | **10/10** locally | measured |
+| `tests.json` (own 10 cases) against the **live deployment** (Claude Haiku 5.5 + Neon) | **10/10**, median 1.1 s / p95 2.3 s per message | measured |
+| 24 parallel users on the live deployment | 24/24 got their own data back, **0 cross-user leaks**, median 5-7 s under load | measured |
 | Booking rate: full agent vs no follow-ups vs human-speed (4 h) reply | **30.6%** vs 19.5% vs 12.8% | simulated, assumed lead behaviour |
 | Without qualification questions | 33.5% bookings but only 28% billable: **$423 vs $1,025** revenue per 100 leads | simulated |
 
@@ -137,7 +142,8 @@ Off-topic requests are refused (and the conversation state is preserved); prompt
 ## Honest limits
 
 - The simulated conversion numbers rest on assumed lead behaviour - they compare variants, they do not predict real booking rates.
-- **The Claude path (Haiku 5.5) is implemented and unit-tested with a fake client, but has not been run against the live API or the benchmarks.** Run `DEADCLOSER_LLM=claude python -m bench.safety_suite` and `scripts/run_tests_json.py` with your key before relying on it. Cost control: at most two calls per message, `effort: low`, trivial messages skip the model.
+- **Claude Haiku 5.5 is a fallback parser plus a rewriter, not the decision-maker.** The deterministic parser handles most messages without any model call (about 0 tokens); Claude parses phrasing the rules cannot ("yo whats the damage on that place") and rewords answers. The safety suite and the simulation benchmark were run on the rules engine; `tests.json` and a parallel-user test were run live with Claude. Cost control: at most two calls per message, `effort: low`, no thinking for rewrites.
+- Throughput: a Vercel function instance serialises CPU work; with 24 users at once the median message took 5-7 s (1.1 s when sequential).
 - Off-topic and "what do you remember" detection are rule-based (explicit phrases + a domain-vocabulary check); unusual phrasings can slip through either way.
 - One server process (per-user locks are in-process); SQLite/Postgres are fine for hundreds of leads/minute.
 - Channels (SMS/WhatsApp), calendar and CRM sync are integration points, not included. Timezones are a fixed UTC offset per business.
@@ -148,7 +154,7 @@ Off-topic requests are refused (and the conversation state is preserved); prompt
 deadcloser/   api.py engine.py graph.py agents/ tools.py memory.py billing.py safety.py nlu.py nlg.py llm.py db.py web/
 bench/        simulate.py safety_suite.py export_replay.py results/
 tests/        flow, safety, API, chat/memory, Claude-backend tests (incl. real Postgres)
-scripts/      deploy_hf.py build_site.py run_tests_json.py render_results.py
+scripts/      build_vercel.py deploy_hf.py build_site.py run_tests_json.py render_results.py
 tests.json  .env.example  Dockerfile  render.yaml
 ```
 

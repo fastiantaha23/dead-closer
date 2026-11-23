@@ -17,6 +17,7 @@ class Settings:
     cors_origins: str = field(default_factory=lambda: os.getenv("CORS_ORIGINS", "*"))
     llm_timeout_s: float = field(default_factory=lambda: float(os.getenv("DEADCLOSER_LLM_TIMEOUT", "20")))
     demo_mode: bool = field(default_factory=lambda: os.getenv("DEADCLOSER_DEMO", "1") == "1")
+    serverless: bool = field(default_factory=lambda: bool(os.getenv("VERCEL") or os.getenv("DEADCLOSER_SERVERLESS")))
     first_reply_sla_s: int = 60
     scheduler_interval_s: int = field(default_factory=lambda: int(os.getenv("DEADCLOSER_TICK", "30")))
 

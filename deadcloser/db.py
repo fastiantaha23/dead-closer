@@ -5,6 +5,7 @@ written with `?` placeholders and portable syntax; this module adapts it. Every 
 require a tenant_id so one tenant can never read another tenant's data."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -96,19 +97,29 @@ class Database:
     def __init__(self, target: str = ":memory:"):
         self.target = target
         self.pg = is_postgres_url(target)
-        self.lock = threading.RLock()
+        self.lock = threading.RLock()          # SQLite only: one connection, serialised
+        self._tl = threading.local()           # Postgres: the connection pinned by an open transaction
         self.conn = None
+        self.pool = None
         self._connect()
-        with self.lock:
-            for stmt in self._schema_statements():
-                self._raw(stmt)
+        with self._guard():
+            if not (self.pg and self._schema_present()):
+                for stmt in self._schema_statements():
+                    self._raw(stmt)
 
     # ---------------------------------------------------------------- connection
+    def _guard(self):
+        """SQLite needs a global lock; Postgres runs different users in parallel on pooled connections."""
+        return contextlib.nullcontext() if self.pg else self.lock
+
     def _connect(self) -> None:
         if self.pg:
-            import psycopg
             from psycopg.rows import dict_row
-            self.conn = psycopg.connect(self.target, autocommit=True, row_factory=dict_row, prepare_threshold=None, connect_timeout=15)
+            from psycopg_pool import ConnectionPool
+            self.pool = ConnectionPool(self.target, min_size=1, max_size=int(os.getenv("DB_POOL_MAX", "8")), open=True, timeout=30,
+                                       check=ConnectionPool.check_connection,
+                                       kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 15})
+            self.pool.wait(timeout=30)
         else:
             if self.target != ":memory:":
                 os.makedirs(os.path.dirname(os.path.abspath(self.target)), exist_ok=True)
@@ -116,6 +127,10 @@ class Database:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")   # durable across app crashes; avoids an fsync per write
+
+    def _schema_present(self) -> bool:
+        row = self._raw("SELECT to_regclass('public.demo_sessions') AS a, to_regclass('public.audit') AS b").fetchone()
+        return bool(row["a"] and row["b"])
 
     def _schema_statements(self) -> list[str]:
         sql = SCHEMA
@@ -129,34 +144,39 @@ class Database:
 
     def _raw(self, sql: str, params: Iterable[Any] = ()):
         sql = self._tr(sql)
+        if not self.pg:
+            return self.conn.execute(sql, tuple(params))
+        pinned = getattr(self._tl, "conn", None)
+        if pinned is not None:                       # inside a transaction: same connection
+            return pinned.execute(sql, tuple(params))
         for attempt in (0, 1):
             try:
-                return self.conn.execute(sql, tuple(params))
+                with self.pool.connection() as conn:
+                    return conn.execute(sql, tuple(params))     # results are buffered client-side, safe after release
             except Exception as e:  # noqa: BLE001
-                if self.pg and attempt == 0 and type(e).__name__ in ("OperationalError", "InterfaceError", "AdminShutdown"):
-                    time.sleep(0.2)
-                    self._connect()          # serverless Postgres drops idle connections: reconnect once
+                if attempt == 0 and type(e).__name__ in ("OperationalError", "InterfaceError", "AdminShutdown", "PoolTimeout"):
+                    time.sleep(0.2)                  # serverless Postgres drops idle connections: retry once on a fresh one
                     continue
                 raise
 
     # ---------------------------------------------------------------- primitives
     def execute(self, sql: str, params: Iterable[Any] = ()):
-        with self.lock:
+        with self._guard():
             return self._raw(sql, params)
 
     def insert_id(self, sql: str, params: Iterable[Any] = ()) -> int:
         """INSERT and return the new autoincrement id on either backend."""
-        with self.lock:
+        with self._guard():
             if self.pg:
                 return self._raw(sql + " RETURNING id", params).fetchone()["id"]
             return self._raw(sql, params).lastrowid
 
     def one(self, sql: str, params: Iterable[Any] = ()) -> dict | None:
-        with self.lock:
+        with self._guard():
             return _row(self._raw(sql, params).fetchone())
 
     def all(self, sql: str, params: Iterable[Any] = ()) -> list[dict]:
-        with self.lock:
+        with self._guard():
             return [_row(r) for r in self._raw(sql, params).fetchall()]
 
     def transaction(self):
@@ -178,7 +198,7 @@ class Database:
 
     def reset(self) -> None:
         """Drop every table (tests only)."""
-        with self.lock:
+        with self._guard():
             for t in TABLES:
                 self._raw(f"DROP TABLE IF EXISTS {t}")
             for stmt in self._schema_statements():
@@ -186,16 +206,36 @@ class Database:
 
 
 class _Tx:
+    """Atomic block. SQLite: global lock + BEGIN IMMEDIATE. Postgres: one pooled connection pinned to this thread, with a
+    global advisory lock so concurrent bookings cannot oversell a slot."""
+
     def __init__(self, db: Database):
         self.db = db
+        self._cm = None
 
     def __enter__(self):
-        self.db.lock.acquire()
-        self.db._raw("BEGIN" if self.db.pg else "BEGIN IMMEDIATE")
-        return self.db
+        db = self.db
+        if not db.pg:
+            db.lock.acquire()
+            db._raw("BEGIN IMMEDIATE")
+            return db
+        self._cm = db.pool.connection()
+        conn = self._cm.__enter__()
+        db._tl.conn = conn
+        conn.execute("BEGIN")
+        conn.execute("SELECT pg_advisory_xact_lock(727001)")
+        return db
 
     def __exit__(self, exc_type, exc, tb):
+        db = self.db
+        if not db.pg:
+            try:
+                db._raw("ROLLBACK" if exc_type else "COMMIT")
+            finally:
+                db.lock.release()
+            return
         try:
-            self.db._raw("ROLLBACK" if exc_type else "COMMIT")
+            db._tl.conn.execute("ROLLBACK" if exc_type else "COMMIT")
         finally:
-            self.db.lock.release()
+            db._tl.conn = None
+            self._cm.__exit__(None, None, None)

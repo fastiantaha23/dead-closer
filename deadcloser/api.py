@@ -132,7 +132,8 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
                 if t and t["config"]["slot_capacity"] < 1000:
                     t["config"]["slot_capacity"] = 1000
                     dc.db.execute("UPDATE tenants SET config=? WHERE id=?", (json.dumps(t["config"]), tid))
-        threads = [threading.Thread(target=scheduler_loop, daemon=True), threading.Thread(target=demo_cleanup_loop, daemon=True)]
+        threads = [] if settings.serverless else [threading.Thread(target=scheduler_loop, daemon=True),
+                                                  threading.Thread(target=demo_cleanup_loop, daemon=True)]
         [th.start() for th in threads]
         yield
         stop.set()
@@ -366,6 +367,9 @@ def create_app(settings: Settings | None = None, engine: DeadCloser | None = Non
             raise HTTPException(503, "demo is busy, try again in a few minutes")
         tid = "demo_realty" if body.vertical == "real_estate" else "demo_motors"
         tenant = tools.get_tenant(dc.db, tid)
+        if not tenant:
+            seed.seed_demo(dc.db, to_epoch(utcnow()))
+            tenant = tools.get_tenant(dc.db, tid)
         now = utcnow().replace(second=0, microsecond=0)
         tz = tenant["config"]["tz_offset_min"]
         if not 9 <= local(now, tz).hour < 19:        # start the demo clock at a sensible local time

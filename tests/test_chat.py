@@ -161,3 +161,25 @@ def test_postgres_memory_and_checkpoints_survive_restart(pg_url):
     # isolation holds in Postgres too
     other = b.chat("pg-other-" + uuid.uuid4().hex[:4], "t1", "What do you know about me?")["reply"]
     assert "Pat" not in other and "450,000" not in other
+
+
+def test_postgres_booking_capacity_holds_under_concurrency(pg_url):
+    import threading
+    from datetime import datetime, timezone
+    from deadcloser import tools
+    dc = DeadCloser(Settings(database_url=pg_url, llm_backend="rules"))
+    tid, _ = dc.create_tenant("Concurrency Realty " + uuid.uuid4().hex[:4], "real_estate")
+    tenant = tools.get_tenant(dc.db, tid)
+    now = datetime(2026, 11, 23, 16, 0, tzinfo=timezone.utc)
+    slot = tools.generate_slots(tenant, now)[4]
+    results = []
+
+    def go(i):
+        lid = f"c{uuid.uuid4().hex[:8]}"
+        dc.db.execute("INSERT INTO leads(id,tenant_id,status,created_at) VALUES (?,?,?,?)", (lid, tid, "new", 0))
+        lead = {"id": lid, "tenant_id": tid, "budget_max": 470000, "timeline_days": 20, "browsing": 0, "status": "new"}
+        results.append(tools.book_visit(dc.db, tenant, lead, None, slot, now)["ok"])
+    ts = [threading.Thread(target=go, args=(i,)) for i in range(14)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sum(results) == tenant["config"]["slot_capacity"] and len(results) == 14

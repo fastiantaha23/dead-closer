@@ -40,10 +40,13 @@ class DeadCloser:
             from langgraph.checkpoint.postgres import PostgresSaver
             from psycopg.rows import dict_row
             from psycopg_pool import ConnectionPool
-            pool = ConnectionPool(path, min_size=1, max_size=6, open=True, check=ConnectionPool.check_connection,
+            pool = ConnectionPool(path, min_size=1, max_size=4, open=True, check=ConnectionPool.check_connection,
                                   kwargs={"autocommit": True, "prepare_threshold": None, "row_factory": dict_row})
             saver = PostgresSaver(pool)
-            saver.setup()
+            with pool.connection() as conn:
+                exists = conn.execute("SELECT to_regclass('public.checkpoints') AS t").fetchone()["t"]
+            if not exists:
+                saver.setup()
             return saver
         import os
         from langgraph.checkpoint.sqlite import SqliteSaver
